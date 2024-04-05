@@ -55,6 +55,11 @@ func (tx *Txn) getRecord(ctx context.Context, key string, atTime *time.Time) (*r
 	// TODO: If existing txn found, roll it forward if we can
 }
 
+// getRange will get a range of records from the DB. If no atTime is provided, then it will abort.
+func (tx *Txn) getRange(ctx context.Context, key string, atTime *time.Time) (*record, error) {
+	// TODO: If existing txn found, roll it forward if we can
+}
+
 // rollForward will attempt to roll a transaction forward if possible. Otherwise,
 // it will abort the transaction
 func (tx *Txn) rollForward(ctx context.Context, key string) (*record, error) {
@@ -79,7 +84,7 @@ func (tx *Txn) Get(ctx context.Context, key string) ([]byte, error) {
 	return rec.val, nil
 }
 
-// TODO: GetRange
+// TODO: GetRange (check if we have anything cached in that range in map)
 
 func (tx *Txn) Write(key string, value []byte) error {
 	// Store in write cache
