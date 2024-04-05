@@ -1,8 +1,8 @@
 package crdb
 
 type (
-	Record struct {
+	record struct {
 		key string
-		val any
+		val []byte
 	}
 )

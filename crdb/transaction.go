@@ -33,33 +33,35 @@ func (tx *Txn) commit(ctx context.Context) error {
 
 	tx.writeTime = wt
 
-	// TODO: prewrite
+	// TODO: preWriteAll
 
-	// TODO: write
+	// TODO: writeAll
 
 	return nil
 }
 
-func (tx *Txn) prewrite(ctx context.Context) error {
+func (tx *Txn) preWriteAll(ctx context.Context) error {
 
 }
 
-func (tx *Txn) write(ctx context.Context) error {
+func (tx *Txn) writeAll(ctx context.Context) error {
 
 }
 
-func (tx *Txn) get(ctx context.Context, key string) (*Record, error) {
+func (tx *Txn) getRecord(ctx context.Context, key string) (*record, error) {
 	// TODO: If existing txn found, roll it forward if we can
 }
 
-func (tx *Txn) Get(ctx context.Context, key string) (any, error) {
+func (tx *Txn) Get(ctx context.Context, key string) ([]byte, error) {
 	// TODO: Check the read cache
 	// TODO: Check the write cache
 
-	record, err := tx.get(ctx, key)
+	rec, err := tx.getRecord(ctx, key)
 	if err != nil {
 		return nil, fmt.Errorf("error in tx.get: %w", err)
 	}
+
+	return rec.val, nil
 }
 
 // TODO: GetRange
