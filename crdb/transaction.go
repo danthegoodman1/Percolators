@@ -84,7 +84,7 @@ func (tx *Txn) Get(ctx context.Context, key string) ([]byte, error) {
 	return rec.val, nil
 }
 
-// TODO: GetRange (check if we have anything cached in that range in map)
+// TODO: GetRange (does not use read cache)
 
 func (tx *Txn) Write(key string, value []byte) error {
 	// Store in write cache

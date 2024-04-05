@@ -67,6 +67,8 @@ Keep in mind that this can use a lot of memory.
 
 (note: this was inspired by FoundationDB’s client)
 
+Note: `GetRange` does not use read caching, this will fetch from the DB every time.
+
 ## Snapshot isolation
 
 Simply put, snapshot isolation is just like serializable: It protects against writes against the same key from concurrent transactions, and ensures you see a stable point in time of the database during the entire transaction.
