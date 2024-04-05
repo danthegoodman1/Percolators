@@ -29,8 +29,15 @@ func (c *Client) Transact(ctx context.Context, fn func(ctx context.Context, tx *
 		return fmt.Errorf("error executing transaction: %w", err)
 	}
 
+	if len(tx.pendingWrites) == 0 {
+		// Read only transaction
+		return nil
+	}
+
 	err = tx.commit(ctx)
 	if err != nil {
 		return fmt.Errorf("error committing transaction: %w", err)
 	}
+
+	return nil
 }

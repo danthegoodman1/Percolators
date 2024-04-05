@@ -17,7 +17,8 @@ type (
 		readCache map[string][]byte
 
 		// empty array means delete
-		pendingWrites map[string][]byte
+		pendingWrites  map[string][]byte
+		primaryLockKey string
 	}
 )
 
@@ -35,19 +36,49 @@ func (tx *Txn) commit(ctx context.Context) error {
 
 	tx.writeTime = wt
 
-	// TODO: preWriteAll
+	err = tx.preWriteAll(ctx)
+	if err != nil {
+		return fmt.Errorf("error in transaction pre write: %w", err)
+	}
 
-	// TODO: writeAll
+	err = tx.writeAll(ctx)
+	if err != nil {
+		return fmt.Errorf("error in transaction write: %w", err)
+	}
 
 	return nil
 }
 
 func (tx *Txn) preWriteAll(ctx context.Context) error {
+	// Pick a primary lock key
+	for key, _ := range tx.pendingWrites {
+		// Just get the first one randomly
+		tx.primaryLockKey = key
+		break
+	}
 
+	// TODO: Write lock to key
+
+	for key, val := range tx.pendingWrites {
+		if key == tx.primaryLockKey {
+			// Ignore this one, we already handled it
+			continue
+		}
+	}
 }
 
 func (tx *Txn) writeAll(ctx context.Context) error {
+	// TODO: Verify that we have the primary key still
 
+	// TODO: Start the commit by updating the primary key (remove from map so we don't double apply)
+
+	// TODO: Update the rest of the keys
+	for key, val := range tx.pendingWrites {
+		if key == tx.primaryLockKey {
+			// Ignore this one, we already handled it
+			continue
+		}
+	}
 }
 
 // getRecord will get a record from the DB. If no atTime is provided, then it will use the current time.
@@ -84,7 +115,7 @@ func (tx *Txn) Get(ctx context.Context, key string) ([]byte, error) {
 	return rec.val, nil
 }
 
-// TODO: GetRange (does not use read cache)
+// TODO: GetRange (does not use read cache)c
 
 func (tx *Txn) Write(key string, value []byte) error {
 	// Store in write cache
