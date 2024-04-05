@@ -14,8 +14,10 @@ type (
 		readTime  *time.Time
 		writeTime *time.Time
 
-		readCache  map[string]any // TODO: correct type
-		writeCache map[string]any // TODO: correct type
+		readCache map[string][]byte
+
+		// empty array means delete
+		pendingWrites map[string][]byte
 	}
 )
 
@@ -48,15 +50,28 @@ func (tx *Txn) writeAll(ctx context.Context) error {
 
 }
 
-func (tx *Txn) getRecord(ctx context.Context, key string) (*record, error) {
+// getRecord will get a record from the DB. If no atTime is provided, then it will use the current time.
+func (tx *Txn) getRecord(ctx context.Context, key string, atTime *time.Time) (*record, error) {
 	// TODO: If existing txn found, roll it forward if we can
 }
 
-func (tx *Txn) Get(ctx context.Context, key string) ([]byte, error) {
-	// TODO: Check the read cache
-	// TODO: Check the write cache
+// rollForward will attempt to roll a transaction forward if possible. Otherwise,
+// it will abort the transaction
+func (tx *Txn) rollForward(ctx context.Context, key string) (*record, error) {
 
-	rec, err := tx.getRecord(ctx, key)
+}
+
+func (tx *Txn) Get(ctx context.Context, key string) ([]byte, error) {
+	// Check the read cache
+	if val, exists := tx.readCache[key]; exists {
+		return val, nil
+	}
+	// Check the write cache
+	if val, exists := tx.pendingWrites[key]; exists {
+		return val, nil
+	}
+
+	rec, err := tx.getRecord(ctx, key, tx.readTime)
 	if err != nil {
 		return nil, fmt.Errorf("error in tx.get: %w", err)
 	}
@@ -66,9 +81,19 @@ func (tx *Txn) Get(ctx context.Context, key string) ([]byte, error) {
 
 // TODO: GetRange
 
-// TODO: Write
+func (tx *Txn) Write(key string, value []byte) error {
+	// Store in write cache
+	tx.pendingWrites[key] = value
 
-// TODO: Delete
+	return nil
+}
+
+func (tx *Txn) Delete(key string) error {
+	// Store in write cache
+	tx.pendingWrites[key] = []byte{}
+
+	return nil
+}
 
 func (tx *Txn) getTime(ctx context.Context) (*time.Time, error) {
 	row := tx.pool.QueryRow(ctx, "select now()")
@@ -78,4 +103,11 @@ func (tx *Txn) getTime(ctx context.Context) (*time.Time, error) {
 	}
 
 	return &t, nil
+}
+
+type TxnAborted struct {
+}
+
+func (t *TxnAborted) Error() string {
+	return "transaction aborted"
 }
