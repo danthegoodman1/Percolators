@@ -1,4 +1,4 @@
-# Percolator for CRDB
+# CRDB Percolator
 
 ## Why CRDB?
 
