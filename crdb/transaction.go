@@ -17,8 +17,7 @@ type (
 		table string
 		id    string
 
-		readTime  *time.Time
-		writeTime *time.Time
+		readTime *time.Time
 
 		readCache map[string][]byte
 
@@ -39,14 +38,7 @@ func (tx *Txn) Transact(ctx context.Context, fn func(ctx context.Context, tx *Tx
 // commit is the top level commit called by the transaction initializer.
 // It coordinates prewrite and write
 func (tx *Txn) commit(ctx context.Context) error {
-	wt, err := tx.getTime(ctx)
-	if err != nil {
-		return fmt.Errorf("error getting write time: %w", err)
-	}
-
-	tx.writeTime = wt
-
-	err = tx.preWriteAll(ctx)
+	err := tx.preWriteAll(ctx)
 	if err != nil {
 		return fmt.Errorf("error in transaction pre write: %w", err)
 	}
@@ -112,7 +104,7 @@ func (tx *Txn) preWriteAll(ctx context.Context) error {
 			return fmt.Errorf("error in lock.Encode: %w", err)
 		}
 
-		res, err := tx.pool.Exec(ctx, fmt.Sprintf("upsert into %s (key, val, lock) values ($1, $2, $3) where lock is null and last_write < $4", tx.table), pw.Key, pw.Val, encodedLock, tx.writeTime)
+		res, err := tx.pool.Exec(ctx, fmt.Sprintf("upsert into %s (key, val, lock) values ($1, $2, $3) where lock is null and last_write < $4", tx.table), pw.Key, pw.Val, encodedLock, tx.readTime)
 		if err != nil {
 			return fmt.Errorf("error writing lock for key %s: %w", pw.Key, err)
 		}
