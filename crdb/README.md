@@ -87,7 +87,9 @@ Percolator lacks lots of detail about the rollback process, so this implementati
 
 This effectively turns the writes into a crude linked list, which can be walked in both directions during rollback. The primary lock must always be cleaned last, so cleaning first walks to the end of the existing list.
 
-This is horribly inefficient and I am eager to use a better method.
+Bigtable has the nice dimension of time, so it can look back and check for write records in the absence of a primary lock, thus meaning each key can be cleaned individually rather than having to walk and entire tracked chain.
+
+This is horribly inefficient, and I am eager to use a better method.
 
 ## Pro tips
 
