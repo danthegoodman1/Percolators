@@ -1,33 +1,18 @@
-# CRDB Percolator
+# CQL Percolator
 
-## Why CRDB?
+## Why CQL?
 
-CRDB is the most feature-filled and operationally easy database out of the box that I trust with my data. It’s just a good database.
+CQL does not natively have proper transactions (if you say LWTs I swear to god), but it has atomic batches, which are required to implement Percolator.
 
-I also have extensive experience running it out to thousands of transactions per second in production workflows, and I understand its behavior, scaling patterns, weaknesses, etc. very well.
+Cassandra and Scylla (Scylla more so) allow absurd levels of scale, and in particular, write performance.
 
-While we reduce the DB to a KV store, we can use the SQL schema to supplement the metadata rows without too much unraveling.
-
-## CRDB already has transactions, why make this again?
-
-Primarily for learning.
-
-If you want an argument why it might be better than normal transactions, well there are a few benefits that greatly increase the transactional throughput of CRDB:
-
-1. Serializable transactions, using the Read Committed isolation level - This can be achieved because the transaction is managed on the client, not the server
-2. Reduced connection pool contention - Because each operation in the transaction is an isolated statement, connections can be used for individual statements only
-3. Native retries - CRDB automatically retries statements for various reasons if they are not part of a larger transaction
-4. Lower write stalls - Because writes are only performed at commit time, there is an immensely lower chance that operations are stalled because a competing transaction is operating on a row
-
-All this means that you should be able to squeeze more and faster transactions out of CRDB. Yeah it’s reduced to KV, but that’s ok, don’t be afraid.
-
-I’m not arguing this should be used instead of normal SQL transactions, that’s probably a bad idea and this likely has some bugs that I am unaware of.
+Adding serializable transactions on top is a tantalizing experience.
 
 ## Who is the timestamp oracle?
 
-CRDB is, we get a timestamp with a simple `select now()` statement at the beginning of every transaction.
+Currently, the client is.
 
-So technically this breaks the isolation guarantees, and a later optimization would be to elect a single CRDB node as the timestamp oracle, or a single process (say a single replica deployment on k8s). I’ll probably extract the timestamp oracle to a function passed into the client initializer if I end up adding proper timestamps, but since I’m making this just for learning at the moment (and I know how to properly implement it), I’m just going to sweep that under the rug and pretend everything is fine.
+So technically this breaks the isolation guarantees, but I’m just going to sweep that under the rug and pretend everything is fine for now (very easy to add a timestamp oracle anyway).
 
 ## Composable transactions
 
@@ -83,7 +68,7 @@ This process uses the same format as TiKV's implementation
 
 ```
 CF_DEFAULT:  (key, 'd', start_ts)   -> value
-CF_LOCK:     (key, 'l', 0)          -> lock_info [primary key, start_ts]
+CF_LOCK:     (key, 'l', 0)          -> lock_info [primary key, start_ts, timeout_ts]
 CF_WRITE:    (key, 'w', commit_ts)  -> write_info [start_ts, op]
 ```
 
