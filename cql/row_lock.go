@@ -5,13 +5,13 @@ import (
 	"fmt"
 )
 
-type lock struct {
+type rowLock struct {
 	PrimaryLockKey string `json:"pri"`
 	StartTs        int64  `json:"sts"`
 	TimeoutTs      int64  `json:"tts"`
 }
 
-func (l *lock) Encode() (string, error) {
+func (l *rowLock) Encode() (string, error) {
 	b, err := json.Marshal(l)
 	if err != nil {
 		return "", err
@@ -20,8 +20,8 @@ func (l *lock) Encode() (string, error) {
 	return string(b), nil
 }
 
-func parseLock(s string) (*lock, error) {
-	var l lock
+func parseLock(s string) (*rowLock, error) {
+	var l rowLock
 	err := json.Unmarshal([]byte(s), &l)
 	if err != nil {
 		return nil, fmt.Errorf("error in json.Unmarshal: %w", err)

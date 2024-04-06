@@ -81,7 +81,7 @@ func parseLockKey(key string) (id string, lockTime time.Time, primaryKey string,
 
 func (tx *Txn) preWriteAll(ctx context.Context) error {
 	for key, _ := range tx.pendingWrites {
-		// Determine the primary lock key
+		// Determine the primary rowLock key
 		tx.primaryLockKey = key
 		break
 	}
@@ -89,21 +89,21 @@ func (tx *Txn) preWriteAll(ctx context.Context) error {
 	b := tx.session.NewBatch(gocql.UnloggedBatch)
 
 	for key, val := range tx.pendingWrites {
-		// Write lock and data to primary key
-		lock := lock{
+		// Write rowLock and data to primary key
+		lock := rowLock{
 			PrimaryLockKey: tx.primaryLockKey,
 			StartTs:        tx.readTime.UnixNano(),
 		}
 
 		encodedLock, err := lock.Encode()
 		if err != nil {
-			return fmt.Errorf("error in lock.Encode: %w", err)
+			return fmt.Errorf("error in rowLock.Encode: %w", err)
 		}
 
 		// Insert the lock
 		b.Entries = append(b.Entries, gocql.BatchEntry{
 			Stmt: fmt.Sprintf("insert into \"%s\" (key, ts, col, val) values (?, 0, 'l', ?) if not exists", tx.table),
-			Args: []any{key, encodedLock},
+			Args: []any{key, []byte(encodedLock)},
 		})
 
 		// Insert the data record
@@ -125,20 +125,93 @@ func (tx *Txn) preWriteAll(ctx context.Context) error {
 	return nil
 }
 
-func (tx *Txn) writeAll(ctx context.Context) error {
-	// TODO: Verify that we have the primary key still, commit it
-	// TODO: - write the commit intent
-	// TODO: - remove the lock
+func (tx *Txn) writeAll(ctx context.Context) (error, chan error) {
+	// Primary rowLock commit
+	{
+		b := tx.session.NewBatch(gocql.UnloggedBatch)
+		// Remove the lock (encode is deterministic)
+		lock := rowLock{
+			PrimaryLockKey: tx.primaryLockKey,
+			StartTs:        tx.readTime.UnixNano(),
+		}
+		encodedLock, err := lock.Encode()
+		if err != nil {
+			return fmt.Errorf("error in lock.Encode: %w", err), nil
+		}
 
-	// TODO: Start the commit by updating the primary key (remove from map so we don't double apply)
+		b.Entries = append(b.Entries, gocql.BatchEntry{
+			Stmt: fmt.Sprintf("delete from \"%s\" where key = ? and ts = 0 and col = 'l' and val = ? if exists", tx.table),
+			Args: []any{tx.primaryLockKey, []byte(encodedLock)},
+		})
 
-	// TODO: Update the rest of the keys with write record async (any future reads will roll forward)
-	for key, val := range tx.pendingWrites {
-		if key == tx.primaryLockKey {
-			// Ignore this one, we already handled it
-			continue
+		// Insert the write record
+		wr := writeRecord{
+			DataTimeNS: tx.readTime.UnixNano(),
+		}
+		encodedWrite, err := wr.Encode()
+		if err != nil {
+			return fmt.Errorf("error in writeRecord.Encode: %w", err), nil
+		}
+
+		b.Entries = append(b.Entries, gocql.BatchEntry{
+			Stmt: fmt.Sprintf("insert into \"%s\" (key, ts, col, val) values (?, ?, 'w', ?) if not exists", tx.table),
+			Args: []any{tx.primaryLockKey, tx.writeTime.UnixNano(), []byte(encodedWrite)},
+		})
+
+		applied, _, err := tx.session.ExecuteBatchCAS(b)
+		if err != nil {
+			return fmt.Errorf("error in primary lock ExecuteBatchCAS: %w", err), nil
+		}
+
+		if !applied {
+			return fmt.Errorf("%w: primary lock prewrite not applied (confict)", &TxnAborted{}), nil
 		}
 	}
+
+	asyncErrChan := make(chan error, 1)
+	// Update the rest of the keys with write record async (any future reads will roll forward)
+	go func(asyncErrChan chan error) {
+		b := tx.session.NewBatch(gocql.UnloggedBatch)
+		for key, _ := range tx.pendingWrites {
+			if key == tx.primaryLockKey {
+				// Ignore this one, we already handled it
+				continue
+			}
+
+			// Remove the lock (encode is deterministic)
+			lock := rowLock{
+				PrimaryLockKey: tx.primaryLockKey,
+				StartTs:        tx.readTime.UnixNano(),
+			}
+			encodedLock, err := lock.Encode()
+			if err != nil {
+				asyncErrChan <- fmt.Errorf("error in lock.Encode: %w", err)
+				return
+			}
+
+			b.Entries = append(b.Entries, gocql.BatchEntry{
+				Stmt: fmt.Sprintf("delete from \"%s\" where key = ? and ts = 0 and col = 'l' and val = ? if exists", tx.table),
+				Args: []any{tx.primaryLockKey, []byte(encodedLock)},
+			})
+
+			// Insert the write record
+			wr := writeRecord{
+				DataTimeNS: tx.readTime.UnixNano(),
+			}
+			encodedWrite, err := wr.Encode()
+			if err != nil {
+				asyncErrChan <- fmt.Errorf("error in writeRecord.Encode: %w", err)
+				return
+			}
+
+			b.Entries = append(b.Entries, gocql.BatchEntry{
+				Stmt: fmt.Sprintf("insert into \"%s\" (key, ts, col, val) values (?, ?, 'w', ?) if not exists", tx.table),
+				Args: []any{tx.primaryLockKey, tx.writeTime.UnixNano(), []byte(encodedWrite)},
+			})
+		}
+	}(asyncErrChan)
+
+	return nil, asyncErrChan
 }
 
 // getRecord will get a record from the DB. If no atTime is provided, then it will use the current time.
@@ -149,7 +222,7 @@ func (tx *Txn) getRecord(ctx context.Context, key string, ts time.Time) (*record
 		Stmt: fmt.Sprintf("select col, ts, val from \"%s\" where key = ? and col = 'd' order by ts desc limit 1", tx.table),
 		Args: []any{key},
 	})
-	// Select the lock
+	// Select the rowLock
 	b.Entries = append(b.Entries, gocql.BatchEntry{
 		Stmt: fmt.Sprintf("select col, ts, val from \"%s\" where key = ? and ts = 0 and col = 'l'"),
 		Args: []any{key},
@@ -172,17 +245,17 @@ func (tx *Txn) getRecord(ctx context.Context, key string, ts time.Time) (*record
 		}
 		err = scanner.Scan(&rec.Col, &rec.Ts, &rec.Val)
 		if err != nil {
-			return nil, fmt.Errorf("%w: error scanning row: %w", &TxnAborted{}, err)
+			return nil, fmt.Errorf("error scanning row: %w", err)
 		}
 	}
 
-	// Check if either has a lock
-	var foundLock *lock
+	// Check if either has a rowLock
+	var foundLock *rowLock
 	for _, rec := range rows {
 		if rec.Col == "l" {
 			foundLock, err = parseLock(string(rec.Val))
 			if err != nil {
-				return nil, fmt.Errorf("%w: error in parseLock: %w", &TxnAborted{}, err)
+				return nil, fmt.Errorf("error in parseLock: %w", err)
 			}
 			break
 		}
@@ -198,8 +271,8 @@ func (tx *Txn) getRecord(ctx context.Context, key string, ts time.Time) (*record
 			}
 			// TODO: wait or immediately abort?
 		}
-		// Otherwise it's a secondary lock
-		// TODO: Get the primary lock
+		// Otherwise it's a secondary rowLock
+		// TODO: Get the primary rowLock
 		// TODO: Check if we need to roll forward, and roll forward
 	}
 
@@ -226,7 +299,7 @@ func (tx *Txn) rollForward(ctx context.Context, key string) (*record, error) {
 }
 
 func (tx *Txn) rollbackOrphanedTxn(ctx context.Context) error {
-	// TODO: walk the linked list in each direction, wait on the primary lock until all other records are undone
+	// TODO: walk the linked list in each direction, wait on the primary rowLock until all other records are undone
 }
 
 func (tx *Txn) Get(ctx context.Context, key string) ([]byte, error) {
