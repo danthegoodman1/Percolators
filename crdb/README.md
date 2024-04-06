@@ -77,23 +77,31 @@ TLDR same thing, only aborts at commit time.
 
 I won’t explain any more features of Percolator (like rolling forward transactions), if you’re interested on how it works and its guarantees, go read the paper (it’s a great read).
 
+## Transaction records
+
+This process uses the same format as TiKV's implementation
+
+```
+CF_DEFAULT:  (key, 'd', start_ts)   -> value
+CF_LOCK:     (key, 'l', 0)          -> lock_info [primary key, start_ts]
+CF_WRITE:    (key, 'w', commit_ts)  -> write_info [start_ts]
+```
+
+Keys are encoded by `(key, column, timestamp)` in the table schema.
+
+Because the SQL lacks traditional atomic batch operations, we need to break up write into 2 stages.
+
+For prewrite, we can dual-insert both the data, and the lock like a normal atomic batch.
+
+For prewrite, we need to both delete the lock, and insert the write row. We write the write record first to serve as a "commit intent", then delete the lock. This way if the transaction ever crashes between commit intent and deleting the lock, another transaction can detect roll forward by looking for a write record pointing to the corresponding value (and optionally an existing lock). This transaction would then have to perform the extra step of clearing the lock, while still rolling the transaction forward.
+
 ## Rollbacks
 
 We handle rollbacks implicitly. That is to say, we don't roll back: we instead treat catastrophic and graceful transaction aborts as the same (by just hard aborting), and let Percolator handle on-demand rollbacks of different KV pairs.
 
-Percolator lacks lots of detail about the rollback process, so I've modified the process a bit. The lock still holds the txn start timestamp, the primary lock, and the commit record location.
-
-The primary lock serves the same purpose of ensuring that during the second phase of the commit, we know whether we still own the transaction (it hasn't been aborted by another yet). However, because removing the lock and inserting a write record would be 2 operations without the native time dimension like Bigtable has, we need to break that up. The write column in percolator serves both to indicate the latest committed data, as well as whether the commit has started and should be rolled forward. We can replace the first use case with a combination of looking for the latest version of the key without a lock.
-
-by writing the commit record first, we indicate to Percolator clients that this transaction intends to commit, and thus any discovered abandoned locks should be rolled forward. Since all locks can point directly to this record, the primary lock + write column no longer needs to serve this purpose. It also means that the primary lock row can be cleaned on-demand like any other secondary write row.
-
-If the transaction commits successfully, then it can delete this record. If the transaction is aborted for any reason, then this record must remain indefinitely, as without active roll back it is unknown to future transactions that find abandoned locks whether there are other locks outstanding from the same transaction.
-
-This also means that we can remove the write meta column, because we can tell committed writes by the lack of a lock on the same record as the data (and thus a get only ever needs to return a max of 2 rows for that key).
-
 ## Cleaning old keys
 
-During a get operation, if there are multiple committed rows older than the grace period (default 12 hours), then they will be deleted async in the background. This ensures that lots of writes don't pile up and cause a single key to store a massive amount of data
+During a get operation, if there are multiple committed rows older than the grace period (default 12 hours), then they will be deleted async in the background. This ensures that lots of writes don't pile up and cause a single key to store a massive amount of data.
 
 ## Pro tips
 
