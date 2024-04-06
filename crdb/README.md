@@ -79,6 +79,14 @@ TLDR same thing, only aborts at commit time.
 
 I won’t explain any more features of Percolator (like rolling forward transactions), if you’re interested on how it works and its guarantees, go read the paper (it’s a great read).
 
+## Rollbacks
+
+We handle rollbacks implicitly. That is to say, we don't rollback: we instead treat catastrophic and graceful transaction aborts as the same (by just hard aborting), and let Percolator handle on-demand rollbacks of different KV pairs.
+
+Percolator lacks lots of detail about the rollback process, so this implementation modifies the lock to be a struct that holds: The primary lock pointer, the previous write record, the next write record, and the id of the transaction.
+
+This effectively turns the writes into a crude linked list, which can be walked in both directions during rollback. The primary lock must always be cleaned last.
+
 ## Pro tips
 
 1. Use composable transactions

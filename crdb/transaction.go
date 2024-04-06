@@ -2,14 +2,19 @@ package crdb
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"github.com/jackc/pgx/v5/pgxpool"
+	"strconv"
+	"strings"
 	"time"
 )
 
 type (
 	Txn struct {
-		pool *pgxpool.Pool
+		pool  *pgxpool.Pool
+		table string
+		id    string
 
 		readTime  *time.Time
 		writeTime *time.Time
@@ -17,8 +22,13 @@ type (
 		readCache map[string][]byte
 
 		// empty array means delete
-		pendingWrites  map[string][]byte
+		pendingWrites  []pendingWrite // probably should be a tree
 		primaryLockKey string
+	}
+
+	pendingWrite struct {
+		Key string
+		Val []byte
 	}
 )
 
@@ -49,30 +59,91 @@ func (tx *Txn) commit(ctx context.Context) error {
 	return nil
 }
 
-func (tx *Txn) preWriteAll(ctx context.Context) error {
-	// Pick a primary lock key
-	for key, _ := range tx.pendingWrites {
-		// Just get the first one randomly
-		tx.primaryLockKey = key
-		break
+var ErrInvalidKey = errors.New("invalid key")
+
+func parseLockKey(key string) (id string, lockTime time.Time, primaryKey string, err error) {
+	parts := strings.Split(key, "::")
+	if len(parts) != 3 {
+		err = ErrInvalidKey
+		return
 	}
 
-	// TODO: Write lock to key
+	id = parts[0]
 
-	for key, val := range tx.pendingWrites {
-		if key == tx.primaryLockKey {
-			// Ignore this one, we already handled it
-			continue
+	parsed, err := strconv.Atoi(parts[1])
+	if err != nil {
+		return
+	}
+
+	lockTime = time.Unix(0, int64(parsed))
+	primaryKey = parts[3]
+
+	return
+}
+
+func (tx *Txn) preWriteAll(ctx context.Context) error {
+	for idx, pw := range tx.pendingWrites {
+		// Write lock and data to primary key
+		lock := Lock{
+			PrimaryLockKey: tx.pendingWrites[0].Key,
+			TxnID:          tx.id,
+		}
+		if idx > 0 {
+			lock.PreviousKey = tx.pendingWrites[idx-1].Key
+		}
+		if idx < len(tx.pendingWrites)-1 {
+			lock.NextKey = tx.pendingWrites[idx+1].Key
+		}
+
+		encodedLock, err := lock.Encode()
+		if err != nil {
+			return fmt.Errorf("error in lock.Encode: %w", err)
+		}
+
+		res, err := tx.pool.Exec(ctx, fmt.Sprintf("upsert into %s (key, val, lock) values ($1, $2, $3) where lock is null and last_write < $4", tx.table), pw.Key, pw.Val, encodedLock, tx.writeTime)
+		if err != nil {
+			return fmt.Errorf("error writing lock for key %s: %w", pw.Key, err)
+		}
+
+		if res.RowsAffected() == 0 {
+			return fmt.Errorf("failed to write lock for key %s: %w", pw.Key, TxnAborted{})
 		}
 	}
 }
 
 func (tx *Txn) writeAll(ctx context.Context) error {
-	// TODO: Verify that we have the primary key still
+	// TODO: Verify that we have the primary key still, commit it
+	for idx, pw := range tx.pendingWrites {
+		// Write lock and data to primary key
+		lock := Lock{
+			PrimaryLockKey: tx.pendingWrites[0].Key,
+			TxnID:          tx.id,
+		}
+		if idx > 0 {
+			lock.PreviousKey = tx.pendingWrites[idx-1].Key
+		}
+		if idx < len(tx.pendingWrites)-1 {
+			lock.NextKey = tx.pendingWrites[idx+1].Key
+		}
+
+		encodedLock, err := lock.Encode()
+		if err != nil {
+			return fmt.Errorf("error in lock.Encode: %w", err)
+		}
+
+		res, err := tx.pool.Exec(ctx, fmt.Sprintf("upsert into %s (key, val, lock) values ($1, $2, $3) where lock is null and last_write < $4", tx.table), pw.Key, pw.Val, encodedLock, tx.writeTime)
+		if err != nil {
+			return fmt.Errorf("error writing lock for key %s: %w", pw.Key, err)
+		}
+
+		if res.RowsAffected() == 0 {
+			return fmt.Errorf("failed to write lock for key %s: %w", pw.Key, TxnAborted{})
+		}
+	}
 
 	// TODO: Start the commit by updating the primary key (remove from map so we don't double apply)
 
-	// TODO: Update the rest of the keys
+	// TODO: Update the rest of the keys with write record
 	for key, val := range tx.pendingWrites {
 		if key == tx.primaryLockKey {
 			// Ignore this one, we already handled it
@@ -97,13 +168,13 @@ func (tx *Txn) rollForward(ctx context.Context, key string) (*record, error) {
 
 }
 
+func (tx *Txn) rollbackOrphanedTxn(ctx context.Context) error {
+	// TODO: walk the linked list in each direction, wait on the primary lock until all other records are undone
+}
+
 func (tx *Txn) Get(ctx context.Context, key string) ([]byte, error) {
 	// Check the read cache
 	if val, exists := tx.readCache[key]; exists {
-		return val, nil
-	}
-	// Check the write cache
-	if val, exists := tx.pendingWrites[key]; exists {
 		return val, nil
 	}
 
@@ -117,18 +188,22 @@ func (tx *Txn) Get(ctx context.Context, key string) ([]byte, error) {
 
 // TODO: GetRange (does not use read cache)c
 
-func (tx *Txn) Write(key string, value []byte) error {
-	// Store in write cache
-	tx.pendingWrites[key] = value
+func (tx *Txn) Write(key string, value []byte) {
+	// TODO: if record already exists, replace it (probably need a tree)
 
-	return nil
+	// Store in write cache
+	tx.pendingWrites = append(tx.pendingWrites, pendingWrite{
+		Key: key,
+		Val: value,
+	})
+
+	// Store in read cache
+	tx.readCache[key] = value
 }
 
-func (tx *Txn) Delete(key string) error {
-	// Store in write cache
-	tx.pendingWrites[key] = []byte{}
-
-	return nil
+func (tx *Txn) Delete(key string) {
+	// Just writing empty
+	tx.Write(key, []byte{})
 }
 
 func (tx *Txn) getTime(ctx context.Context) (*time.Time, error) {

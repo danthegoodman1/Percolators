@@ -3,18 +3,31 @@ package crdb
 import (
 	"context"
 	"fmt"
+	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5/pgxpool"
 )
 
 type (
 	Client struct {
-		pool *pgxpool.Pool
+		pool  *pgxpool.Pool
+		table string
 	}
 )
 
+func NewClient(pool *pgxpool.Pool, table string) *Client {
+	c := &Client{
+		pool:  pool,
+		table: table,
+	}
+
+	return c
+}
+
 func (c *Client) Transact(ctx context.Context, fn func(ctx context.Context, tx *Txn) error) error {
 	tx := &Txn{
-		pool: c.pool,
+		pool:  c.pool,
+		table: c.table,
+		id:    uuid.New().String(),
 	}
 
 	// Get the read timestamp
