@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"github.com/google/btree"
 	"github.com/jackc/pgx/v5/pgxpool"
 	"strconv"
 	"strings"
@@ -22,8 +23,7 @@ type (
 		readCache map[string][]byte
 
 		// empty array means delete
-		pendingWrites  []pendingWrite // probably should be a tree
-		primaryLockKey string
+		pendingWrites *btree.BTreeG[pendingWrite]
 	}
 
 	pendingWrite struct {
@@ -81,18 +81,30 @@ func parseLockKey(key string) (id string, lockTime time.Time, primaryKey string,
 	return
 }
 
+func (tx *Txn) getPrimaryLockKey() string {
+	var key string
+	tx.pendingWrites.Ascend(func(item pendingWrite) bool {
+		item.Key = key
+		return false
+	})
+
+	return key
+}
+
 func (tx *Txn) preWriteAll(ctx context.Context) error {
-	for idx, pw := range tx.pendingWrites {
+	// This is so disgustingly inefficient, I want my mommy
+	// TODO: map then array? tree then array? need to be able to ref forward and back one in deterministic order
+	primaryKey := tx.getPrimaryLockKey()
+	prevKey := ""
+	tx.pendingWrites.Ascend(func(item pendingWrite) bool {
 		// Write lock and data to primary key
 		lock := Lock{
-			PrimaryLockKey: tx.pendingWrites[0].Key,
+			PrimaryLockKey: primaryKey,
 			TxnID:          tx.id,
 		}
-		if idx > 0 {
-			lock.PreviousKey = tx.pendingWrites[idx-1].Key
-		}
-		if idx < len(tx.pendingWrites)-1 {
-			lock.NextKey = tx.pendingWrites[idx+1].Key
+		if prevKey != "" {
+			lock.PreviousKey = prevKey
+			tx.pendingWrites.Get()
 		}
 
 		encodedLock, err := lock.Encode()
@@ -108,7 +120,10 @@ func (tx *Txn) preWriteAll(ctx context.Context) error {
 		if res.RowsAffected() == 0 {
 			return fmt.Errorf("failed to write lock for key %s: %w", pw.Key, TxnAborted{})
 		}
-	}
+
+		prevKey = item.Key
+	})
+	a := tx.pendingWrites.Iter()
 }
 
 func (tx *Txn) writeAll(ctx context.Context) error {

@@ -85,7 +85,9 @@ We handle rollbacks implicitly. That is to say, we don't rollback: we instead tr
 
 Percolator lacks lots of detail about the rollback process, so this implementation modifies the lock to be a struct that holds: The primary lock pointer, the previous write record, the next write record, and the id of the transaction.
 
-This effectively turns the writes into a crude linked list, which can be walked in both directions during rollback. The primary lock must always be cleaned last.
+This effectively turns the writes into a crude linked list, which can be walked in both directions during rollback. The primary lock must always be cleaned last, so cleaning first walks to the end of the existing list.
+
+This is horribly inefficient and I am eager to use a better method.
 
 ## Pro tips
 
