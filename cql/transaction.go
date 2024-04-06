@@ -151,7 +151,7 @@ func (tx *Txn) getRecord(ctx context.Context, key string, ts time.Time) (*record
 	})
 	// Select the lock
 	b.Entries = append(b.Entries, gocql.BatchEntry{
-		Stmt: fmt.Sprintf("select col, ts, val from \"%s\" where key = ? and col = 'l'"),
+		Stmt: fmt.Sprintf("select col, ts, val from \"%s\" where key = ? and ts = 0 and col = 'l'"),
 		Args: []any{key},
 	})
 
