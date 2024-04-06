@@ -22,7 +22,8 @@ type (
 		readCache map[string][]byte
 
 		// empty array means delete
-		pendingWrites map[string][]byte
+		pendingWrites  map[string][]byte
+		primaryLockKey string
 	}
 
 	pendingWrite struct {
@@ -80,60 +81,46 @@ func parseLockKey(key string) (id string, lockTime time.Time, primaryKey string,
 	return
 }
 
-func (tx *Txn) getPrimaryLockKey() string {
-	var key string
-	tx.pendingWrites.Ascend(func(item pendingWrite) bool {
-		item.Key = key
-		return false
-	})
+func (tx *Txn) preWriteAll(ctx context.Context) error {
+	for key, _ := range tx.pendingWrites {
+		// Determine the primary lock key
+		tx.primaryLockKey = key
+		break
+	}
 
-	return key
-}
-
-func (tx *Txn) preWriteAll(ctx context.Context) (err error) {
-	// This is so disgustingly inefficient, I want my mommy
-	// TODO: map then array? tree then array? need to be able to ref forward and back one in deterministic order
-	primaryKey := tx.getPrimaryLockKey()
-	prevKey := ""
-	tx.pendingWrites.Ascend(func(item pendingWrite) bool {
+	for key, val := range tx.pendingWrites {
 		// Write lock and data to primary key
-		lock := Lock{
-			PrimaryLockKey: primaryKey,
-			TxnID:          tx.id,
-		}
-		if prevKey != "" {
-			lock.PreviousKey = prevKey
-			tx.pendingWrites.Get()
+		lock := lock{
+			PrimaryLockKey: tx.primaryLockKey,
+			StartTs:        tx.readTime.UnixNano(),
 		}
 
 		encodedLock, err := lock.Encode()
 		if err != nil {
-			err = fmt.Errorf("error in lock.Encode: %w", err)
-			return false
+			return fmt.Errorf("error in lock.Encode: %w", err)
 		}
 
-		res, err := tx.pool.Exec(ctx, fmt.Sprintf("upsert into %s (key, val, lock) values ($1, $2, $3) where lock is null and last_write < $4", tx.table), pw.Key, pw.Val, encodedLock, tx.readTime)
+		// Insert the lock and the data record
+		res, err := tx.pool.Exec(ctx, fmt.Sprintf(`
+		insert into "%s" (key, col, ts, val)
+		values ($1, 'l', 0, $2), ($1, 'd', $3, $4)
+		`, tx.table), key, encodedLock, tx.readTime, val)
 		if err != nil {
-			err = fmt.Errorf("error writing lock for key %s: %w", pw.Key, err)
-			return false
+			return fmt.Errorf("error writing lock for key %s: %w", key, err)
 		}
 
 		if res.RowsAffected() == 0 {
-			err = fmt.Errorf("failed to write lock for key %s: %w", pw.Key, TxnAborted{})
-			return false
+			return fmt.Errorf("failed to write lock for key %s: %w", key, TxnAborted{})
 		}
-
-		prevKey = item.Key
-		return true
-	})
-	if err != nil {
-		return
 	}
-	a := tx.pendingWrites.Iter()
+
+	return nil
 }
 
 func (tx *Txn) writeAll(ctx context.Context) error {
 	// TODO: Verify that we have the primary key still, commit it
+	// TODO: - write the commit intent
+	// TODO: - remove the lock
 
 	// TODO: Start the commit by updating the primary key (remove from map so we don't double apply)
 
