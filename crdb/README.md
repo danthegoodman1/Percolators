@@ -84,7 +84,7 @@ This process uses the same format as TiKV's implementation
 ```
 CF_DEFAULT:  (key, 'd', start_ts)   -> value
 CF_LOCK:     (key, 'l', 0)          -> lock_info [primary key, start_ts]
-CF_WRITE:    (key, 'w', commit_ts)  -> write_info [start_ts]
+CF_WRITE:    (key, 'w', commit_ts)  -> write_info [start_ts, op]
 ```
 
 Keys are encoded by `(key, column, timestamp)` in the table schema.
@@ -93,7 +93,7 @@ Because the SQL lacks traditional atomic batch operations, we need to break up w
 
 For prewrite, we can dual-insert both the data, and the lock like a normal atomic batch.
 
-For prewrite, we need to both delete the lock, and insert the write row. We write the write record first to serve as a "commit intent", then delete the lock. This way if the transaction ever crashes between commit intent and deleting the lock, another transaction can detect roll forward by looking for a write record pointing to the corresponding value (and optionally an existing lock). This transaction would then have to perform the extra step of clearing the lock, while still rolling the transaction forward.
+For write, we need to both delete the lock, and insert the write record in the same atomic transaction (assuming that we still have the lock). To use a transaction for this purpose would be comical.
 
 ## Rollbacks
 
