@@ -4,9 +4,7 @@
 
 CRDB is the most feature-filled and operationally easy database out of the box that I trust with my data. It’s just a good database.
 
-I also have extensive experience running it out to thousands of transactions per second in production workflows, and I understand it’s behavior, scaling patterns, weaknesses, etc. very well.
-
-Additionally, the AS OF SYSTEM TIME condition allows the client to preserve the original snapshot isolation level of Percolator (like serializable, but aborts at commit time).
+I also have extensive experience running it out to thousands of transactions per second in production workflows, and I understand its behavior, scaling patterns, weaknesses, etc. very well.
 
 While we reduce the DB to a KV store, we can use the SQL schema to supplement the metadata rows without too much unraveling.
 
@@ -59,7 +57,7 @@ The transaction would abort regardless, and reads are so much cheaper than write
 
 Similar to the awesome composable transactions, the transaction client has another trick up its sleeve: transactional caching.
 
-Lets say you read the same row across two different functions within the same transaction, well it’d sure be a waste to do to the DB multiple times when you know you’re going to get the exact same data! Instead, the client caches reads for a transactions, so when you read the same row again, it instantly returns the previous result without making any network requests.
+Let's say you read the same row across two different functions within the same transaction, well it’d sure be a waste to do to the DB multiple times when you know you’re going to get the exact same data! Instead, the client caches reads for a transactions, so when you read the same row again, it instantly returns the previous result without making any network requests.
 
 The same works for writes: If you write to a row, then any subsequent reads will see that write without going to the database.
 
@@ -81,15 +79,21 @@ I won’t explain any more features of Percolator (like rolling forward transact
 
 ## Rollbacks
 
-We handle rollbacks implicitly. That is to say, we don't rollback: we instead treat catastrophic and graceful transaction aborts as the same (by just hard aborting), and let Percolator handle on-demand rollbacks of different KV pairs.
+We handle rollbacks implicitly. That is to say, we don't roll back: we instead treat catastrophic and graceful transaction aborts as the same (by just hard aborting), and let Percolator handle on-demand rollbacks of different KV pairs.
 
-Percolator lacks lots of detail about the rollback process, so this implementation modifies the lock to be a struct that holds: The primary lock pointer, the previous write record, the next write record, and the id of the transaction.
+Percolator lacks lots of detail about the rollback process, so I've modified the process a bit. The lock still holds the txn start timestamp, the primary lock, and the commit record location.
 
-This effectively turns the writes into a crude linked list, which can be walked in both directions during rollback. The primary lock must always be cleaned last, so cleaning first walks to the end of the existing list.
+The primary lock serves the same purpose of ensuring that during the second phase of the commit, we know whether we still own the transaction (it hasn't been aborted by another yet). However, because removing the lock and inserting a write record would be 2 operations without the native time dimension like Bigtable has, we need to break that up. The write column in percolator serves both to indicate the latest committed data, as well as whether the commit has started and should be rolled forward. We can replace the first use case with a combination of looking for the latest version of the key without a lock.
 
-Bigtable has the nice dimension of time, so it can look back and check for write records in the absence of a primary lock, thus meaning each key can be cleaned individually rather than having to walk and entire tracked chain.
+by writing the commit record first, we indicate to Percolator clients that this transaction intends to commit, and thus any discovered abandoned locks should be rolled forward. Since all locks can point directly to this record, the primary lock + write column no longer needs to serve this purpose. It also means that the primary lock row can be cleaned on-demand like any other secondary write row.
 
-This is horribly inefficient, and I am eager to use a better method.
+If the transaction commits successfully, then it can delete this record. If the transaction is aborted for any reason, then this record must remain indefinitely, as without active roll back it is unknown to future transactions that find abandoned locks whether there are other locks outstanding from the same transaction.
+
+This also means that we can remove the write meta column, because we can tell committed writes by the lack of a lock on the same record as the data (and thus a get only ever needs to return a max of 2 rows for that key).
+
+## Cleaning old keys
+
+During a get operation, if there are multiple committed rows older than the grace period (default 12 hours), then they will be deleted async in the background. This ensures that lots of writes don't pile up and cause a single key to store a massive amount of data
 
 ## Pro tips
 

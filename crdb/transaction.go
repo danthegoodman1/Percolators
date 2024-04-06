@@ -4,7 +4,6 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"github.com/google/btree"
 	"github.com/jackc/pgx/v5/pgxpool"
 	"strconv"
 	"strings"
@@ -23,7 +22,7 @@ type (
 		readCache map[string][]byte
 
 		// empty array means delete
-		pendingWrites *btree.BTreeG[pendingWrite]
+		pendingWrites map[string][]byte
 	}
 
 	pendingWrite struct {
@@ -135,33 +134,6 @@ func (tx *Txn) preWriteAll(ctx context.Context) (err error) {
 
 func (tx *Txn) writeAll(ctx context.Context) error {
 	// TODO: Verify that we have the primary key still, commit it
-	for idx, pw := range tx.pendingWrites {
-		// Write lock and data to primary key
-		lock := Lock{
-			PrimaryLockKey: tx.pendingWrites[0].Key,
-			TxnID:          tx.id,
-		}
-		if idx > 0 {
-			lock.PreviousKey = tx.pendingWrites[idx-1].Key
-		}
-		if idx < len(tx.pendingWrites)-1 {
-			lock.NextKey = tx.pendingWrites[idx+1].Key
-		}
-
-		encodedLock, err := lock.Encode()
-		if err != nil {
-			return fmt.Errorf("error in lock.Encode: %w", err)
-		}
-
-		res, err := tx.pool.Exec(ctx, fmt.Sprintf("upsert into %s (key, val, lock) values ($1, $2, $3) where lock is null and last_write < $4", tx.table), pw.Key, pw.Val, encodedLock, tx.writeTime)
-		if err != nil {
-			return fmt.Errorf("error writing lock for key %s: %w", pw.Key, err)
-		}
-
-		if res.RowsAffected() == 0 {
-			return fmt.Errorf("failed to write lock for key %s: %w", pw.Key, TxnAborted{})
-		}
-	}
 
 	// TODO: Start the commit by updating the primary key (remove from map so we don't double apply)
 
@@ -177,6 +149,7 @@ func (tx *Txn) writeAll(ctx context.Context) error {
 // getRecord will get a record from the DB. If no atTime is provided, then it will use the current time.
 func (tx *Txn) getRecord(ctx context.Context, key string, atTime *time.Time) (*record, error) {
 	// TODO: If existing txn found, roll it forward if we can
+	// TODO: if some data records are more than grace period, delete them
 }
 
 // getRange will get a range of records from the DB. If no atTime is provided, then it will abort.
@@ -200,6 +173,11 @@ func (tx *Txn) Get(ctx context.Context, key string) ([]byte, error) {
 		return val, nil
 	}
 
+	// Check the pending writes
+	if val, exists := tx.pendingWrites[key]; exists {
+		return val, nil
+	}
+
 	rec, err := tx.getRecord(ctx, key, tx.readTime)
 	if err != nil {
 		return nil, fmt.Errorf("error in tx.get: %w", err)
@@ -214,10 +192,7 @@ func (tx *Txn) Write(key string, value []byte) {
 	// TODO: if record already exists, replace it (probably need a tree)
 
 	// Store in write cache
-	tx.pendingWrites = append(tx.pendingWrites, pendingWrite{
-		Key: key,
-		Val: value,
-	})
+	tx.pendingWrites[key] = value
 
 	// Store in read cache
 	tx.readCache[key] = value
