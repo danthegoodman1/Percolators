@@ -3,7 +3,6 @@ package crdb
 import (
 	"context"
 	"fmt"
-	"github.com/google/btree"
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5/pgxpool"
 )
@@ -29,9 +28,6 @@ func (c *Client) Transact(ctx context.Context, fn func(ctx context.Context, tx *
 		pool:  c.pool,
 		table: c.table,
 		id:    uuid.New().String(),
-		pendingWrites: btree.NewG(2, func(a, b pendingWrite) bool {
-			return a.Key < b.Key
-		}),
 	}
 
 	// Get the read timestamp
@@ -46,7 +42,7 @@ func (c *Client) Transact(ctx context.Context, fn func(ctx context.Context, tx *
 		return fmt.Errorf("error executing transaction: %w", err)
 	}
 
-	if tx.pendingWrites.Len() == 0 {
+	if len(tx.pendingWrites) == 0 {
 		// Read only transaction
 		return nil
 	}
