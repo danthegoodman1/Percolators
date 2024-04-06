@@ -86,6 +86,8 @@ func (tx *Txn) preWriteAll(ctx context.Context) error {
 		break
 	}
 
+	b := tx.session.NewBatch(gocql.UnloggedBatch)
+
 	for key, val := range tx.pendingWrites {
 		// Write lock and data to primary key
 		lock := lock{
@@ -98,18 +100,26 @@ func (tx *Txn) preWriteAll(ctx context.Context) error {
 			return fmt.Errorf("error in lock.Encode: %w", err)
 		}
 
-		// Insert the lock and the data record
-		res, err := tx.session.Exec(ctx, fmt.Sprintf(`
-		insert into "%s" (key, col, ts, val)
-		values ($1, 'l', 0, $2), ($1, 'd', $3, $4)
-		`, tx.table), key, encodedLock, tx.readTime, val)
-		if err != nil {
-			return fmt.Errorf("error writing lock for key %s: %w", key, err)
-		}
+		// Insert the lock
+		b.Entries = append(b.Entries, gocql.BatchEntry{
+			Stmt: fmt.Sprintf("insert into \"%s\" (key, ts, col, val) values (?, 0, 'l', ?) if not exists", tx.table),
+			Args: []any{key, encodedLock},
+		})
 
-		if res.RowsAffected() == 0 {
-			return fmt.Errorf("failed to write lock for key %s: %w", key, TxnAborted{})
-		}
+		// Insert the data record
+		b.Entries = append(b.Entries, gocql.BatchEntry{
+			Stmt: fmt.Sprintf("insert into \"%s\" (key, ts, col, val) values (?, ?, 'd', ?) if not exists", tx.table),
+			Args: []any{key, tx.readTime.UnixNano(), val},
+		})
+	}
+
+	applied, _, err := tx.session.ExecuteBatchCAS(b)
+	if err != nil {
+		return fmt.Errorf("error in ExecuteBatchCAS: %w", err)
+	}
+
+	if !applied {
+		return fmt.Errorf("%w: prewrite not applied (confict)", &TxnAborted{})
 	}
 
 	return nil
@@ -136,12 +146,12 @@ func (tx *Txn) getRecord(ctx context.Context, key string, ts time.Time) (*record
 	b := tx.session.NewBatch(gocql.UnloggedBatch) // can do unlogged since we're only hitting 1 partition (this is the default)
 	// Select the data before the timestamp
 	b.Entries = append(b.Entries, gocql.BatchEntry{
-		Stmt: fmt.Sprintf("select col, ts, val from %s where key = ? and col = 'd' order by ts desc limit 1", tx.table),
+		Stmt: fmt.Sprintf("select col, ts, val from \"%s\" where key = ? and col = 'd' order by ts desc limit 1", tx.table),
 		Args: []any{key},
 	})
 	// Select the lock
 	b.Entries = append(b.Entries, gocql.BatchEntry{
-		Stmt: fmt.Sprintf("select col, ts, val from %s where key = ? and col = 'l'"),
+		Stmt: fmt.Sprintf("select col, ts, val from \"%s\" where key = ? and col = 'l'"),
 		Args: []any{key},
 	})
 
