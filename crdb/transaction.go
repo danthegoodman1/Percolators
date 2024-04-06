@@ -17,7 +17,8 @@ type (
 		table string
 		id    string
 
-		readTime *time.Time
+		readTime  *time.Time
+		writeTime *time.Time
 
 		readCache map[string][]byte
 
@@ -38,7 +39,14 @@ func (tx *Txn) Transact(ctx context.Context, fn func(ctx context.Context, tx *Tx
 // commit is the top level commit called by the transaction initializer.
 // It coordinates prewrite and write
 func (tx *Txn) commit(ctx context.Context) error {
-	err := tx.preWriteAll(ctx)
+	ts, err := tx.getTime(ctx)
+	if err != nil {
+		return fmt.Errorf("error getting write timestamp: %w", err)
+	}
+
+	tx.writeTime = ts
+
+	err = tx.preWriteAll(ctx)
 	if err != nil {
 		return fmt.Errorf("error in transaction pre write: %w", err)
 	}
