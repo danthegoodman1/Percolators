@@ -1,4 +1,4 @@
-package crdb
+package cql
 
 import (
 	"encoding/json"
@@ -7,9 +7,8 @@ import (
 
 type lock struct {
 	PrimaryLockKey string `json:"pri"`
-	PreviousKey    string `json:"prv"`
-	NextKey        string `json:"nxt,omitempty"`
-	StartTs        int64  `json:"ts"`
+	StartTs        int64  `json:"sts"`
+	TimeoutTs      int64  `json:"tts"`
 }
 
 func (l *lock) Encode() (string, error) {

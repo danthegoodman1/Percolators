@@ -1,4 +1,4 @@
-package crdb
+package cql
 
 type writeRecord struct {
 	// p (put), d (del)

@@ -1,4 +1,4 @@
-package crdb
+package cql
 
 import "context"
 

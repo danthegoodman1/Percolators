@@ -1,23 +1,23 @@
-package crdb
+package cql
 
 import (
 	"context"
 	"fmt"
+	"github.com/gocql/gocql"
 	"github.com/google/uuid"
-	"github.com/jackc/pgx/v5/pgxpool"
 )
 
 type (
 	Client struct {
-		pool  *pgxpool.Pool
-		table string
+		session *gocql.Session
+		table   string
 	}
 )
 
-func NewClient(pool *pgxpool.Pool, table string) *Client {
+func NewClient(session *gocql.Session, table string) *Client {
 	c := &Client{
-		pool:  pool,
-		table: table,
+		session: session,
+		table:   table,
 	}
 
 	return c
@@ -25,9 +25,9 @@ func NewClient(pool *pgxpool.Pool, table string) *Client {
 
 func (c *Client) Transact(ctx context.Context, fn func(ctx context.Context, tx *Txn) error) error {
 	tx := &Txn{
-		pool:  c.pool,
-		table: c.table,
-		id:    uuid.New().String(),
+		session: c.session,
+		table:   c.table,
+		id:      uuid.New().String(),
 	}
 
 	// Get the read timestamp

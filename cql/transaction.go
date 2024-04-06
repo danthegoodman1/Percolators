@@ -1,10 +1,11 @@
-package crdb
+package cql
 
 import (
 	"context"
 	"errors"
 	"fmt"
-	"github.com/jackc/pgx/v5/pgxpool"
+	"github.com/gocql/gocql"
+	"github.com/scylladb/gocqlx/v2/table"
 	"strconv"
 	"strings"
 	"time"
@@ -12,9 +13,9 @@ import (
 
 type (
 	Txn struct {
-		pool  *pgxpool.Pool
-		table string
-		id    string
+		session *gocql.Session
+		table   string
+		id      string
 
 		readTime  *time.Time
 		writeTime *time.Time
@@ -24,11 +25,8 @@ type (
 		// empty array means delete
 		pendingWrites  map[string][]byte
 		primaryLockKey string
-	}
 
-	pendingWrite struct {
-		Key string
-		Val []byte
+		tableMetadata table.Metadata
 	}
 )
 
@@ -101,7 +99,7 @@ func (tx *Txn) preWriteAll(ctx context.Context) error {
 		}
 
 		// Insert the lock and the data record
-		res, err := tx.pool.Exec(ctx, fmt.Sprintf(`
+		res, err := tx.session.Exec(ctx, fmt.Sprintf(`
 		insert into "%s" (key, col, ts, val)
 		values ($1, 'l', 0, $2), ($1, 'd', $3, $4)
 		`, tx.table), key, encodedLock, tx.readTime, val)
@@ -124,7 +122,7 @@ func (tx *Txn) writeAll(ctx context.Context) error {
 
 	// TODO: Start the commit by updating the primary key (remove from map so we don't double apply)
 
-	// TODO: Update the rest of the keys with write record
+	// TODO: Update the rest of the keys with write record async (any future reads will roll forward)
 	for key, val := range tx.pendingWrites {
 		if key == tx.primaryLockKey {
 			// Ignore this one, we already handled it
@@ -134,9 +132,76 @@ func (tx *Txn) writeAll(ctx context.Context) error {
 }
 
 // getRecord will get a record from the DB. If no atTime is provided, then it will use the current time.
-func (tx *Txn) getRecord(ctx context.Context, key string, atTime *time.Time) (*record, error) {
-	// TODO: If existing txn found, roll it forward if we can
-	// TODO: if some data records are more than grace period, delete them
+func (tx *Txn) getRecord(ctx context.Context, key string, ts time.Time) (*record, error) {
+	b := tx.session.NewBatch(gocql.UnloggedBatch) // can do unlogged since we're only hitting 1 partition (this is the default)
+	// Select the data before the timestamp
+	b.Entries = append(b.Entries, gocql.BatchEntry{
+		Stmt: fmt.Sprintf("select col, ts, val from %s where key = ? and col = 'd' order by ts desc limit 1", tx.table),
+		Args: []any{key},
+	})
+	// Select the lock
+	b.Entries = append(b.Entries, gocql.BatchEntry{
+		Stmt: fmt.Sprintf("select col, ts, val from %s where key = ? and col = 'l'"),
+		Args: []any{key},
+	})
+
+	var m map[string]any
+	applied, iter, err := tx.session.MapExecuteBatchCAS(b, m)
+	if err != nil {
+		return nil, fmt.Errorf("error in MapExecuteBatchCAS: %w", err)
+	}
+	if !applied {
+		return nil, fmt.Errorf("%w: not applied", &TxnAborted{})
+	}
+
+	var rows []record
+	scanner := iter.Scanner()
+	for scanner.Next() {
+		rec := record{
+			Key: key,
+		}
+		err = scanner.Scan(&rec.Col, &rec.Ts, &rec.Val)
+		if err != nil {
+			return nil, fmt.Errorf("%w: error scanning row: %w", &TxnAborted{}, err)
+		}
+	}
+
+	// Check if either has a lock
+	var foundLock *lock
+	for _, rec := range rows {
+		if rec.Col == "l" {
+			foundLock, err = parseLock(string(rec.Val))
+			if err != nil {
+				return nil, fmt.Errorf("%w: error in parseLock: %w", &TxnAborted{}, err)
+			}
+			break
+		}
+	}
+
+	if foundLock != nil {
+		if foundLock.PrimaryLockKey == key {
+			// We are the primary
+			if foundLock.TimeoutTs < time.Now().UnixNano() {
+				// TODO: roll it back
+				// Do lookup again
+				return tx.getRecord(ctx, key, ts)
+			}
+			// TODO: wait or immediately abort?
+		}
+		// Otherwise it's a secondary lock
+		// TODO: Get the primary lock
+		// TODO: Check if we need to roll forward, and roll forward
+	}
+
+	// Return the data row
+	for _, rec := range rows {
+		if rec.Col == "d" {
+			return &rec, nil
+		}
+	}
+
+	// Not found
+	return nil, nil
 }
 
 // getRange will get a range of records from the DB. If no atTime is provided, then it will abort.
@@ -191,7 +256,7 @@ func (tx *Txn) Delete(key string) {
 }
 
 func (tx *Txn) getTime(ctx context.Context) (*time.Time, error) {
-	row := tx.pool.QueryRow(ctx, "select now()")
+	row := tx.session.QueryRow(ctx, "select now()")
 	var t time.Time
 	if err := row.Scan(&t); err != nil {
 		return nil, fmt.Errorf("error scanning time: %w", err)
