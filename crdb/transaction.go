@@ -83,7 +83,7 @@ func (tx *Txn) getPrimaryLockKey() string {
 	return key
 }
 
-func (tx *Txn) preWriteAll(ctx context.Context) error {
+func (tx *Txn) preWriteAll(ctx context.Context) (err error) {
 	// This is so disgustingly inefficient, I want my mommy
 	// TODO: map then array? tree then array? need to be able to ref forward and back one in deterministic order
 	primaryKey := tx.getPrimaryLockKey()
@@ -101,20 +101,27 @@ func (tx *Txn) preWriteAll(ctx context.Context) error {
 
 		encodedLock, err := lock.Encode()
 		if err != nil {
-			return fmt.Errorf("error in lock.Encode: %w", err)
+			err = fmt.Errorf("error in lock.Encode: %w", err)
+			return false
 		}
 
 		res, err := tx.pool.Exec(ctx, fmt.Sprintf("upsert into %s (key, val, lock) values ($1, $2, $3) where lock is null and last_write < $4", tx.table), pw.Key, pw.Val, encodedLock, tx.readTime)
 		if err != nil {
-			return fmt.Errorf("error writing lock for key %s: %w", pw.Key, err)
+			err = fmt.Errorf("error writing lock for key %s: %w", pw.Key, err)
+			return false
 		}
 
 		if res.RowsAffected() == 0 {
-			return fmt.Errorf("failed to write lock for key %s: %w", pw.Key, TxnAborted{})
+			err = fmt.Errorf("failed to write lock for key %s: %w", pw.Key, TxnAborted{})
+			return false
 		}
 
 		prevKey = item.Key
+		return true
 	})
+	if err != nil {
+		return
+	}
 	a := tx.pendingWrites.Iter()
 }
 
