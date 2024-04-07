@@ -26,8 +26,6 @@ The best database is the one you have to think the least about the rules of when
 
 (note: this was inspired by FoundationDB’s client)
 
-However, because a write after the read timestamp would cause a transaction abort at commit time anyway, we could in theory perform the optimization of not using AS OF SYSTEM TIME reads, and just aborting the transaction when we find a row has been updated after the transaction read timestamp.
-
 The reason we don’t do this is because of automatic read-only transactions: A read only transaction never writes, so rather than having to specify read only vs read-write transactions, they become implicitly read-only by just committing without any writes.
 
 While this potentially leaves some optimization on the table, it makes composable transactions very easy to use, and that’s a worthwhile tradeoff.
@@ -68,7 +66,7 @@ This process uses the same format as TiKV's implementation
 
 ```
 CF_DEFAULT:  (key, 'd', start_ts)   -> value
-CF_LOCK:     (key, 'l', 0)          -> lock_info [primary key, start_ts, timeout_ts]
+CF_LOCK:     (key, 'l', 0)          -> lock_info [primary key, start_ts, timeout_ts, commit_ts]
 CF_WRITE:    (key, 'w', commit_ts)  -> write_info [start_ts, op]
 ```
 
@@ -84,9 +82,11 @@ For write, we need to both delete the lock, and insert the write record in the s
 
 We handle rollbacks implicitly. That is to say, we don't roll back: we instead treat catastrophic and graceful transaction aborts as the same (by just hard aborting), and let Percolator handle on-demand rollbacks of different KV pairs.
 
-## Cleaning old keys
+## Async commit
 
-During a get operation, if there are multiple committed rows older than the grace period (default 12 hours), then they will be deleted async in the background. This ensures that lots of writes don't pile up and cause a single key to store a massive amount of data.
+Once the primary lock is fully committed, the top-level `Transact` call exits, and passes a `chan error` that can be listened for errors in secondary commits.
+
+This is acceptable because of the 2-phase commit, we know that if the rest of the commit fails, another transaction will be able to roll forward any partial commits found on secondary writes.
 
 ## Pro tips
 
