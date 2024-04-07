@@ -68,6 +68,8 @@ While we still have a stable snapshot in time of the database, we do not abort i
 
 This can be set with `Transaction.SetIsolationLevel()`, default `Snapshot`. Once explicitly declared as `Snapshot`, it cannot be further reduced to `ReadRepeatable`.
 
+This means that commits are slightly faster, because there is one less round of selecting a record for every write intent.
+
 ## Transaction records
 
 This process uses the same format as TiKV's implementation
