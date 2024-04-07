@@ -311,7 +311,7 @@ func (tx *Txn) Get(ctx context.Context, key string) ([]byte, error) {
 	return rec.Val, nil
 }
 
-// TODO: GetRange (does not use read cache)c
+// TODO: GetRange (does not use read cache)
 
 func (tx *Txn) Write(key string, value []byte) {
 	// Store in write cache
