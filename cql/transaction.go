@@ -221,61 +221,41 @@ func (tx *Txn) writeAll(ctx context.Context) (error, chan error) {
 
 // getRecord will get a record from the DB. If no atTime is provided, then it will use the current time.
 func (tx *Txn) getRecord(ctx context.Context, key string, ts time.Time) (*record, error) {
-	b := tx.session.NewBatch(gocql.UnloggedBatch) // can do unlogged since we're only hitting 1 partition (this is the default)
-	rows := make([]record, 2)
-	// Select the data before the timestamp
-	b.Entries = append(b.Entries, gocql.BatchEntry{
-		Stmt: fmt.Sprintf("select col, ts, val from \"%s\" where key = ? and col = 'd' order by ts desc limit 1", tx.table),
-		Args: []any{key},
-	})
-	// Select the rowLock
-	b.Entries = append(b.Entries, gocql.BatchEntry{
-		Stmt: fmt.Sprintf("select col, ts, val from \"%s\" where key = ? and ts = 0 and col = 'l'", tx.table),
-		Args: []any{key},
-	})
-
-	rec := record{
+	lockRec := record{
 		Key: key,
 	}
-	applied, iter, err := tx.session.ExecuteBatchCAS(b, &rec.Col, &rec.Ts, &rec.Val)
-	if err != nil {
-		return nil, fmt.Errorf("error in MapExecuteBatchCAS: %w", err)
-	}
-	if !applied {
-		return nil, fmt.Errorf("%w: not applied", &TxnAborted{})
+	foundLock := true
+	err := tx.session.Query(fmt.Sprintf("select col, ts, val from \"%s\" where key = ? and ts = 0 and col = 'l'", tx.table), key).Scan(&lockRec.Col, &lockRec.Ts, &lockRec.Val)
+	if errors.Is(err, gocql.ErrNotFound) {
+		foundLock = false
+	} else if err != nil {
+		return nil, fmt.Errorf("error scanning lock row: %w", err)
 	}
 
-	scanner := iter.Scanner()
-	for scanner.Next() {
-		rec = record{
-			Key: key,
-		}
-		err = scanner.Scan(&rec.Col, &rec.Ts, &rec.Val)
+	dataRec := record{
+		Key: key,
+	}
+	err = tx.session.Query(fmt.Sprintf("select col, ts, val from \"%s\" where key = ? and col = 'd' order by ts desc limit 1", tx.table), key).Scan(&dataRec.Col, &dataRec.Ts, &dataRec.Val)
+	if errors.Is(err, gocql.ErrNotFound) {
+		return nil, nil
+	} else if err != nil {
+		return nil, fmt.Errorf("error scanning data row: %w", err)
+	}
+
+	// Check if we found a row lock
+	if foundLock {
+		fmt.Println("found an existing lock!")
+		lock, err := parseLock(string(lockRec.Val))
 		if err != nil {
-			return nil, fmt.Errorf("error scanning row: %w", err)
+			return nil, fmt.Errorf("error in parseLock: %w", err)
 		}
-		rows[1] = rec
-	}
-
-	// Check if either has a rowLock
-	var foundLock *rowLock
-	for _, rec := range rows {
-		if rec.Col == "l" {
-			foundLock, err = parseLock(string(rec.Val))
-			if err != nil {
-				return nil, fmt.Errorf("error in parseLock: %w", err)
-			}
-			break
-		}
-	}
-
-	if foundLock != nil {
-		if foundLock.PrimaryLockKey == key {
+		if lock.PrimaryLockKey == key {
 			// We are the primary
-			if foundLock.TimeoutTs < time.Now().UnixNano() {
+			if lock.TimeoutTs < time.Now().UnixNano() {
 				// TODO: roll it back
 				// Do lookup again
-				return tx.getRecord(ctx, key, ts)
+				panic("doing lookup again")
+				// return tx.getRecord(ctx, key, ts)
 			}
 			// TODO: wait or immediately abort?
 		}
@@ -285,14 +265,7 @@ func (tx *Txn) getRecord(ctx context.Context, key string, ts time.Time) (*record
 	}
 
 	// Return the data row
-	for _, rec := range rows {
-		if rec.Col == "d" {
-			return &rec, nil
-		}
-	}
-
-	// Not found
-	return nil, nil
+	return &dataRec, nil
 }
 
 // getRange will get a range of records from the DB. If no atTime is provided, then it will abort.
@@ -316,11 +289,13 @@ func (tx *Txn) rollbackOrphanedTxn(ctx context.Context) error {
 func (tx *Txn) Get(ctx context.Context, key string) ([]byte, error) {
 	// Check the read cache
 	if val, exists := tx.readCache[key]; exists {
+		fmt.Println("got in read cache")
 		return val, nil
 	}
 
 	// Check the pending writes
 	if val, exists := tx.pendingWrites[key]; exists {
+		fmt.Println("got in write cache")
 		return val, nil
 	}
 
@@ -329,19 +304,18 @@ func (tx *Txn) Get(ctx context.Context, key string) ([]byte, error) {
 		return nil, fmt.Errorf("error in tx.get: %w", err)
 	}
 
+	if rec == nil {
+		return nil, nil
+	}
+
 	return rec.Val, nil
 }
 
 // TODO: GetRange (does not use read cache)c
 
 func (tx *Txn) Write(key string, value []byte) {
-	// TODO: if record already exists, replace it (probably need a tree)
-
 	// Store in write cache
 	tx.pendingWrites[key] = value
-
-	// Store in read cache
-	tx.readCache[key] = value
 }
 
 func (tx *Txn) Delete(key string) {
