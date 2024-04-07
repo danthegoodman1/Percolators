@@ -147,7 +147,6 @@ func (tx *Txn) writeAll(ctx context.Context) (error, chan error) {
 			Stmt: fmt.Sprintf("delete from \"%s\" where key = ? and ts = 0 and col = 'l' if val = ?", tx.table),
 			Args: []any{tx.primaryLockKey, []byte(encodedLock)},
 		})
-		fmt.Println(encodedLock)
 
 		// Insert the write record
 		wr := writeRecord{
@@ -244,7 +243,6 @@ func (tx *Txn) getRecord(ctx context.Context, key string, ts time.Time) (*record
 
 	// Check if we found a row lock
 	if foundLock {
-		fmt.Println("found an existing lock!")
 		lock, err := parseLock(string(lockRec.Val))
 		if err != nil {
 			return nil, fmt.Errorf("error in parseLock: %w", err)
@@ -301,13 +299,11 @@ func (tx *Txn) rollbackOrphanedTxn(ctx context.Context) error {
 func (tx *Txn) Get(ctx context.Context, key string) ([]byte, error) {
 	// Check the read cache
 	if val, exists := tx.readCache[key]; exists {
-		fmt.Println("got in read cache")
 		return val, nil
 	}
 
 	// Check the pending writes
 	if val, exists := tx.pendingWrites[key]; exists {
-		fmt.Println("got in write cache")
 		return val, nil
 	}
 
