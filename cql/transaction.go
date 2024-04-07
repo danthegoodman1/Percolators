@@ -381,6 +381,10 @@ func (tx *Txn) getRecord(ctx context.Context, key string, ts time.Time) (*record
 	}
 
 	// Return the data row
+	if dataRec.Val == nil {
+		// Empty
+		return nil, nil
+	}
 	return &dataRec, nil
 }
 
