@@ -251,11 +251,23 @@ func (tx *Txn) getRecord(ctx context.Context, key string, ts time.Time) (*record
 		}
 		if lock.PrimaryLockKey == key {
 			// We are the primary
-			if lock.TimeoutTs < time.Now().UnixNano() {
-				// TODO: roll it back
+			if lock.TimeoutTs <= time.Now().UnixNano() {
+				// Roll it back
+				b := tx.session.NewBatch(gocql.UnloggedBatch)
+				b.Entries = append(b.Entries, gocql.BatchEntry{
+					Stmt: fmt.Sprintf("delete from \"%s\" where key = ? and ts = 0 and col = 'l' if val = ?", tx.table),
+					Args: []any{tx.primaryLockKey, lockRec.Val},
+				})
+				applied, _, err := tx.session.MapExecuteBatchCAS(b, make(map[string]interface{}))
+				if err != nil {
+					return nil, fmt.Errorf("error in executing LWT to roll back expired lock: %w", err)
+				}
+				if !applied {
+					return nil, fmt.Errorf("%w: found lock roll back not applied", &TxnAborted{})
+				}
+
 				// Do lookup again
-				panic("doing lookup again")
-				// return tx.getRecord(ctx, key, ts)
+				return tx.getRecord(ctx, key, ts)
 			}
 			// TODO: wait or immediately abort?
 		}
