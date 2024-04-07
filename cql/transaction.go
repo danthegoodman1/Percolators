@@ -260,16 +260,16 @@ func (tx *Txn) getRecord(ctx context.Context, key string, ts time.Time) (*record
 				})
 				applied, _, err := tx.session.MapExecuteBatchCAS(b, make(map[string]interface{}))
 				if err != nil {
-					return nil, fmt.Errorf("error in executing LWT to roll back expired lock: %w", err)
+					return nil, fmt.Errorf("error in executing LWT to roll back expired lock on %s: %w", key, err)
 				}
 				if !applied {
-					return nil, fmt.Errorf("%w: found lock roll back not applied", &TxnAborted{})
+					return nil, fmt.Errorf("%w: found lock roll back not applied on %s", &TxnAborted{}, key)
 				}
 
 				// Do lookup again
 				return tx.getRecord(ctx, key, ts)
 			}
-			// TODO: wait or immediately abort?
+			return nil, fmt.Errorf("%w: existing lock found on %s", &TxnAborted{}, key)
 		}
 		// Otherwise it's a secondary rowLock
 		// TODO: Get the primary rowLock
