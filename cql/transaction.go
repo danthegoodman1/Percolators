@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"github.com/gocql/gocql"
 	"github.com/scylladb/gocqlx/v2/table"
+	"golang.org/x/sync/errgroup"
 	"strconv"
 	"strings"
 	"time"
@@ -81,15 +82,10 @@ func parseLockKey(key string) (id string, lockTime time.Time, primaryKey string,
 }
 
 func (tx *Txn) preWriteAll(ctx context.Context) error {
-	for key := range tx.pendingWrites {
+	for key, val := range tx.pendingWrites {
 		// Determine the primary rowLock key
 		tx.primaryLockKey = key
-		break
-	}
-
-	b := tx.session.NewBatch(gocql.LoggedBatch).WithContext(ctx)
-
-	for key, val := range tx.pendingWrites {
+		b := tx.session.NewBatch(gocql.LoggedBatch).WithContext(ctx)
 		// Write rowLock and data to primary key
 		lock := rowLock{
 			PrimaryLockKey: tx.primaryLockKey,
@@ -114,16 +110,67 @@ func (tx *Txn) preWriteAll(ctx context.Context) error {
 			Stmt: fmt.Sprintf("insert into \"%s\" (key, ts, col, val) values (?, ?, 'd', ?) if not exists", tx.table),
 			Args: []any{key, tx.readTime.UnixNano(), val},
 		})
+
+		// Non-map version was always having applied: false
+		applied, _, err := tx.session.MapExecuteBatchCAS(b, make(map[string]interface{}))
+		if err != nil {
+			return fmt.Errorf("error in MapExecuteBatchCAS: %w", err)
+		}
+
+		if !applied {
+			return fmt.Errorf("%w: prewrite not applied (confict)", &TxnAborted{})
+		}
+
+		break
 	}
 
-	// Non-map version was always having applied: false
-	applied, _, err := tx.session.MapExecuteBatchCAS(b, make(map[string]interface{}))
+	// Can do prewrite concurrently
+	g := errgroup.Group{}
+	for key, val := range tx.pendingWrites {
+		g.Go(func() error {
+			b := tx.session.NewBatch(gocql.LoggedBatch).WithContext(ctx)
+			// Write rowLock and data to primary key
+			lock := rowLock{
+				PrimaryLockKey: tx.primaryLockKey,
+				StartTs:        tx.readTime.UnixNano(),
+				TimeoutTs:      tx.readTime.Add(time.Second * 5).UnixNano(),
+				CommitTs:       tx.writeTime.UnixNano(),
+			}
+
+			encodedLock, err := lock.Encode()
+			if err != nil {
+				return fmt.Errorf("error in rowLock.Encode: %w", err)
+			}
+
+			// Insert the lock
+			b.Entries = append(b.Entries, gocql.BatchEntry{
+				Stmt: fmt.Sprintf("insert into \"%s\" (key, ts, col, val) values (?, 0, 'l', ?) if not exists", tx.table),
+				Args: []any{key, []byte(encodedLock)},
+			})
+
+			// Insert the data record
+			b.Entries = append(b.Entries, gocql.BatchEntry{
+				Stmt: fmt.Sprintf("insert into \"%s\" (key, ts, col, val) values (?, ?, 'd', ?) if not exists", tx.table),
+				Args: []any{key, tx.readTime.UnixNano(), val},
+			})
+
+			// Non-map version was always having applied: false
+			applied, _, err := tx.session.MapExecuteBatchCAS(b, make(map[string]interface{}))
+			if err != nil {
+				return fmt.Errorf("error in MapExecuteBatchCAS: %w", err)
+			}
+
+			if !applied {
+				return fmt.Errorf("%w: prewrite not applied (confict)", &TxnAborted{})
+			}
+
+			return nil
+		})
+	}
+
+	err := g.Wait()
 	if err != nil {
-		return fmt.Errorf("error in MapExecuteBatchCAS: %w", err)
-	}
-
-	if !applied {
-		return fmt.Errorf("%w: prewrite not applied (confict)", &TxnAborted{})
+		return fmt.Errorf("error in async prewrite: %w", err)
 	}
 
 	return nil

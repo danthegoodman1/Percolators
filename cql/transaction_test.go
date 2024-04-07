@@ -22,7 +22,7 @@ func TestSingleTransactionWrite(t *testing.T) {
 
 	c := NewClient(s, "testkv")
 
-	err, _ = func(t Transactable) (error, chan error) {
+	err = func(t Transactable) error {
 		return t.Transact(context.Background(), func(ctx context.Context, tx *Txn) error {
 			tx.Write("examplew", []byte("this is a write only val"))
 			return nil
@@ -42,7 +42,7 @@ func TestSingleTransactionReadWrite(t *testing.T) {
 
 	c := NewClient(s, "testkv")
 
-	err, _ = func(t Transactable) (error, chan error) {
+	err = func(t Transactable) error {
 		return t.Transact(context.Background(), func(ctx context.Context, tx *Txn) error {
 			tx.Write("examplerw", []byte("this is a read write val"))
 
@@ -119,7 +119,7 @@ func TestRollForward(t *testing.T) {
 	}
 
 	// Do the txn that reads it
-	err, _ = func(t Transactable) (error, chan error) {
+	err = func(t Transactable) error {
 		return t.Transact(context.Background(), func(ctx context.Context, tx *Txn) error {
 			// Read networked val
 			val, err := tx.Get(ctx, key)
@@ -190,7 +190,7 @@ func TestRollBackPrimaryExpired(t *testing.T) {
 	}
 
 	// Do the txn that reads it
-	err, _ = func(t Transactable) (error, chan error) {
+	err = func(t Transactable) error {
 		return t.Transact(context.Background(), func(ctx context.Context, tx *Txn) error {
 			// Read networked val
 			val, err := tx.Get(ctx, key)
@@ -244,7 +244,7 @@ func TestRollBackPrimaryExpiredIsPrimary(t *testing.T) {
 	}
 
 	// Do the txn that reads it
-	err, _ = func(t Transactable) (error, chan error) {
+	err = func(t Transactable) error {
 		return t.Transact(context.Background(), func(ctx context.Context, tx *Txn) error {
 			// Read networked val
 			val, err := tx.Get(ctx, pkey)
@@ -299,7 +299,7 @@ func TestRollBackNoPrimary(t *testing.T) {
 	}
 
 	// Do the txn that reads it
-	err, _ = func(t Transactable) (error, chan error) {
+	err = func(t Transactable) error {
 		return t.Transact(context.Background(), func(ctx context.Context, tx *Txn) error {
 			// Read networked val
 			val, err := tx.Get(ctx, key)
