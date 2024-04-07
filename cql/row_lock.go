@@ -8,6 +8,7 @@ import (
 type rowLock struct {
 	PrimaryLockKey string `json:"pri"`
 	StartTs        int64  `json:"sts"`
+	CommitTs       int64  `json:"cts"`
 	TimeoutTs      int64  `json:"tts"`
 }
 

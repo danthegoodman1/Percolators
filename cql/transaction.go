@@ -95,6 +95,7 @@ func (tx *Txn) preWriteAll(ctx context.Context) error {
 			PrimaryLockKey: tx.primaryLockKey,
 			StartTs:        tx.readTime.UnixNano(),
 			TimeoutTs:      tx.readTime.Add(time.Second * 5).UnixNano(),
+			CommitTs:       tx.writeTime.UnixNano(),
 		}
 
 		encodedLock, err := lock.Encode()
@@ -137,7 +138,8 @@ func (tx *Txn) writeAll(ctx context.Context) (error, chan error) {
 			PrimaryLockKey: tx.primaryLockKey,
 			StartTs:        tx.readTime.UnixNano(),
 			TimeoutTs:      tx.readTime.Add(time.Second * 5).UnixNano(),
-		} // TODO: timeout ts
+			CommitTs:       tx.writeTime.UnixNano(),
+		}
 		encodedLock, err := lock.Encode()
 		if err != nil {
 			return fmt.Errorf("error in lock.Encode: %w", err), nil
@@ -150,7 +152,7 @@ func (tx *Txn) writeAll(ctx context.Context) (error, chan error) {
 
 		// Insert the write record
 		wr := writeRecord{
-			DataTimeNS: tx.readTime.UnixNano(),
+			StartTimeNS: tx.readTime.UnixNano(),
 		}
 		encodedWrite, err := wr.Encode()
 		if err != nil {
@@ -186,7 +188,9 @@ func (tx *Txn) writeAll(ctx context.Context) (error, chan error) {
 			lock := rowLock{
 				PrimaryLockKey: tx.primaryLockKey,
 				StartTs:        tx.readTime.UnixNano(),
-			} // TODO: timeout ts
+				TimeoutTs:      tx.readTime.Add(time.Second * 5).UnixNano(),
+				CommitTs:       tx.writeTime.UnixNano(),
+			}
 			encodedLock, err := lock.Encode()
 			if err != nil {
 				asyncErrChan <- fmt.Errorf("error in lock.Encode: %w", err)
@@ -200,7 +204,7 @@ func (tx *Txn) writeAll(ctx context.Context) (error, chan error) {
 
 			// Insert the write record
 			wr := writeRecord{
-				DataTimeNS: tx.readTime.UnixNano(),
+				StartTimeNS: tx.readTime.UnixNano(),
 			}
 			encodedWrite, err := wr.Encode()
 			if err != nil {
@@ -218,13 +222,13 @@ func (tx *Txn) writeAll(ctx context.Context) (error, chan error) {
 	return nil, asyncErrChan
 }
 
-// getRecord will get a record from the DB. If no atTime is provided, then it will use the current time.
+// getRecord will get a record from the DB.
 func (tx *Txn) getRecord(ctx context.Context, key string, ts time.Time) (*record, error) {
 	lockRec := record{
 		Key: key,
 	}
 	foundLock := true
-	err := tx.session.Query(fmt.Sprintf("select col, ts, val from \"%s\" where key = ? and ts = 0 and col = 'l'", tx.table), key).Scan(&lockRec.Col, &lockRec.Ts, &lockRec.Val)
+	err := tx.session.Query(fmt.Sprintf("select col, ts, val from \"%s\" where key = ? and ts = 0 and col = 'l'", tx.table), key).Consistency(gocql.Quorum).Scan(&lockRec.Col, &lockRec.Ts, &lockRec.Val)
 	if errors.Is(err, gocql.ErrNotFound) {
 		foundLock = false
 	} else if err != nil {
@@ -234,7 +238,7 @@ func (tx *Txn) getRecord(ctx context.Context, key string, ts time.Time) (*record
 	dataRec := record{
 		Key: key,
 	}
-	err = tx.session.Query(fmt.Sprintf("select col, ts, val from \"%s\" where key = ? and col = 'd' order by ts desc limit 1", tx.table), key).Scan(&dataRec.Col, &dataRec.Ts, &dataRec.Val)
+	err = tx.session.Query(fmt.Sprintf("select col, ts, val from \"%s\" where key = ? and col = 'd' order by ts desc limit 1", tx.table), key).Consistency(gocql.Quorum).Scan(&dataRec.Col, &dataRec.Ts, &dataRec.Val)
 	if errors.Is(err, gocql.ErrNotFound) {
 		return nil, nil
 	} else if err != nil {
@@ -247,31 +251,97 @@ func (tx *Txn) getRecord(ctx context.Context, key string, ts time.Time) (*record
 		if err != nil {
 			return nil, fmt.Errorf("error in parseLock: %w", err)
 		}
-		if lock.PrimaryLockKey == key {
-			// We are the primary
-			if lock.TimeoutTs <= time.Now().UnixNano() {
-				// Roll it back
-				b := tx.session.NewBatch(gocql.UnloggedBatch).WithContext(ctx)
-				b.Entries = append(b.Entries, gocql.BatchEntry{
-					Stmt: fmt.Sprintf("delete from \"%s\" where key = ? and ts = 0 and col = 'l' if val = ?", tx.table),
-					Args: []any{tx.primaryLockKey, lockRec.Val},
-				})
-				applied, _, err := tx.session.MapExecuteBatchCAS(b, make(map[string]interface{}))
-				if err != nil {
-					return nil, fmt.Errorf("error in executing LWT to roll back expired lock on %s: %w", key, err)
+
+		var primaryLock *rowLock
+
+		if lock.PrimaryLockKey != key {
+			// We need to look up the primary and see if the locks exists (we might be primary)
+			primaryLockRec := record{
+				Key: key,
+			}
+			err = tx.session.Query(fmt.Sprintf("select col, ts, val from \"%s\" where key = ? and ts = 0 and col = 'l'", tx.table), lock.PrimaryLockKey).Consistency(gocql.Quorum).Scan(&primaryLockRec.Col, &primaryLockRec.Ts, &primaryLockRec.Val)
+			if errors.Is(err, gocql.ErrNotFound) {
+				// Do nothing
+			} else if err != nil {
+				return nil, fmt.Errorf("error scanning primary lock row: %w", err)
+			} else {
+				// We've got the primary lock
+				primaryLock, err = parseLock(string(primaryLockRec.Val))
+			}
+		} else {
+			// We were already the primary lock
+			primaryLock = lock
+		}
+
+		if primaryLock != nil && primaryLock.TimeoutTs <= time.Now().UnixNano() {
+			// The transaction has expired, roll it back
+			err = tx.rollBackTxn(ctx, key, lockRec.Ts, lockRec.Val)
+			if err != nil {
+				return nil, fmt.Errorf("error in tx.rollBackTxn: %w", err)
+			}
+
+			// Do lookup again
+			return tx.getRecord(ctx, key, ts)
+		}
+
+		if primaryLock == nil {
+			// We must check for the write record
+			foundCommitWrite := false
+			iter := tx.session.Query(fmt.Sprintf("select col, ts, val from \"%s\" where key = ? and ts > ? and col = 'w' order by ts asc", tx.table), lock.StartTs, lock.PrimaryLockKey).Consistency(gocql.Quorum).Iter()
+			scanner := iter.Scanner()
+
+			for scanner.Next() {
+				rec := record{
+					Key: key,
 				}
-				if !applied {
-					return nil, fmt.Errorf("%w: found lock roll back not applied on %s", &TxnAborted{}, key)
+				err = scanner.Scan(&rec.Col, &rec.Ts, &rec.Val)
+				if err != nil {
+					return nil, fmt.Errorf("error scanning primary commit write row: %w", err)
+				}
+
+				// Check if the write record contains the start timestamp
+				wr, err := parseWriteRecord(string(rec.Val))
+				if err != nil {
+					return nil, fmt.Errorf("error in parseWriteRecord: %w", err)
+				}
+
+				if wr.StartTimeNS == lockRec.Ts {
+					// We found the write record, we can abort
+					foundCommitWrite = true
+
+					// only need to manually close the iterator if we break early
+					err = iter.Close()
+					if err != nil {
+						return nil, fmt.Errorf("error in iter.Close: %w", err)
+					}
+
+					break
+				}
+			}
+
+			if foundCommitWrite {
+				// Txn is committed, roll the transaction forward
+				err = tx.rollForward(ctx, key, *lock)
+				if err != nil {
+					return nil, fmt.Errorf("error in tx.rollForward for %s: %w", key, err)
 				}
 
 				// Do lookup again
 				return tx.getRecord(ctx, key, ts)
 			}
-			return nil, fmt.Errorf("%w: existing lock found on %s", &TxnAborted{}, key)
+
+			// Otherwise the primary lock was rolled back, so we need to as well
+			err = tx.rollBackTxn(ctx, key, lockRec.Ts, lockRec.Val)
+			if err != nil {
+				return nil, fmt.Errorf("error in tx.rollBackTxn: %w", err)
+			}
+
+			// Do lookup again
+			return tx.getRecord(ctx, key, ts)
 		}
-		// Otherwise it's a secondary rowLock
-		// TODO: Get the primary rowLock
-		// TODO: Check if we need to roll forward, and roll forward
+
+		// Otherwise the txn is in progress, and we must abort
+		return nil, fmt.Errorf("%w: existing lock found on %s (another txn in progress)", &TxnAborted{}, key)
 	}
 
 	// Return the data row
@@ -280,20 +350,73 @@ func (tx *Txn) getRecord(ctx context.Context, key string, ts time.Time) (*record
 
 // getRange will get a range of records from the DB. If no atTime is provided, then it will abort.
 func (tx *Txn) getRange(ctx context.Context, key string, atTime *time.Time) (*record, error) {
-	// TODO: If existing txn found, roll it forward if we can
+	// TODO: Get records and locks, check if we need to roll back or forward
 	panic("not implemented")
 }
 
 // rollForward will attempt to roll a transaction forward if possible. Otherwise,
 // it will abort the transaction
-func (tx *Txn) rollForward(ctx context.Context, key string) (*record, error) {
-	// TODO: this
-	panic("not implemented")
+func (tx *Txn) rollForward(ctx context.Context, key string, lock rowLock) error {
+	b := tx.session.NewBatch(gocql.UnloggedBatch).WithContext(ctx)
+	// Remove the lock (encode is deterministic)
+	encodedLock, err := lock.Encode()
+	if err != nil {
+		return fmt.Errorf("error in lock.Encode: %w", err)
+	}
+
+	b.Entries = append(b.Entries, gocql.BatchEntry{
+		Stmt: fmt.Sprintf("delete from \"%s\" where key = ? and ts = 0 and col = 'l' if val = ?", tx.table),
+		Args: []any{tx.primaryLockKey, []byte(encodedLock)},
+	})
+
+	// Insert the write record
+	wr := writeRecord{
+		StartTimeNS: lock.StartTs,
+	}
+	encodedWrite, err := wr.Encode()
+	if err != nil {
+		return fmt.Errorf("error in writeRecord.Encode: %w", err)
+	}
+
+	b.Entries = append(b.Entries, gocql.BatchEntry{
+		Stmt: fmt.Sprintf("insert into \"%s\" (key, ts, col, val) values (?, ?, 'w', ?) if not exists", tx.table),
+		Args: []any{tx.primaryLockKey, lock.CommitTs, []byte(encodedWrite)},
+	})
+
+	applied, _, err := tx.session.MapExecuteBatchCAS(b, make(map[string]interface{}))
+	if err != nil {
+		return fmt.Errorf("error in roll forward lock MapExecuteBatchCAS: %w", err)
+	}
+
+	if !applied {
+		return fmt.Errorf("%w: roll forward not applied (confict)", &TxnAborted{})
+	}
+
+	return nil
 }
 
-func (tx *Txn) rollbackOrphanedTxn(ctx context.Context) error {
-	// TODO: walk the linked list in each direction, wait on the primary rowLock until all other records are undone
-	panic("not implemented")
+func (tx *Txn) rollBackTxn(ctx context.Context, key string, ts int64, lockRec []byte) error {
+	// If the txn is expired, roll it back
+	b := tx.session.NewBatch(gocql.UnloggedBatch).WithContext(ctx)
+	// Delete the lock
+	b.Entries = append(b.Entries, gocql.BatchEntry{
+		Stmt: fmt.Sprintf("delete from \"%s\" where key = ? and ts = 0 and col = 'l' if val = ?", tx.table),
+		Args: []any{tx.primaryLockKey, lockRec},
+	})
+	// Delete the data record
+	b.Entries = append(b.Entries, gocql.BatchEntry{
+		Stmt: fmt.Sprintf("delete from \"%s\" where key = ? and ts = ? and col = 'd' if exists", tx.table),
+		Args: []any{tx.primaryLockKey, ts},
+	})
+	applied, _, err := tx.session.MapExecuteBatchCAS(b, make(map[string]interface{}))
+	if err != nil {
+		return fmt.Errorf("error in executing LWT to roll back expired lock on %s: %w", key, err)
+	}
+	if !applied {
+		return fmt.Errorf("%w: found lock roll back not applied on %s", &TxnAborted{}, key)
+	}
+
+	return nil
 }
 
 func (tx *Txn) Get(ctx context.Context, key string) ([]byte, error) {
@@ -319,7 +442,7 @@ func (tx *Txn) Get(ctx context.Context, key string) ([]byte, error) {
 	return rec.Val, nil
 }
 
-// TODO: GetRange (does not use read cache)
+// TODO: GetRange (maybe reads locks first, then reads read cache, then reads data records?)
 
 func (tx *Txn) Write(key string, value []byte) {
 	// Store in write cache
