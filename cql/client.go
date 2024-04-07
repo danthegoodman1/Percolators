@@ -23,34 +23,36 @@ func NewClient(session *gocql.Session, table string) *Client {
 	return c
 }
 
-func (c *Client) Transact(ctx context.Context, fn func(ctx context.Context, tx *Txn) error) error {
+func (c *Client) Transact(ctx context.Context, fn func(ctx context.Context, tx *Txn) error) (error, chan error) {
 	tx := &Txn{
-		session: c.session,
-		table:   c.table,
-		id:      uuid.New().String(),
+		session:       c.session,
+		table:         c.table,
+		id:            uuid.New().String(),
+		pendingWrites: make(map[string][]byte),
+		readCache:     make(map[string][]byte),
 	}
 
 	// Get the read timestamp
 	t, err := tx.getTime(ctx)
 	if err != nil {
-		return fmt.Errorf("error getting read timestamp: %w", err)
+		return fmt.Errorf("error getting read timestamp: %w", err), nil
 	}
 	tx.readTime = t
 
 	err = fn(ctx, tx)
 	if err != nil {
-		return fmt.Errorf("error executing transaction: %w", err)
+		return fmt.Errorf("error executing transaction: %w", err), nil
 	}
 
 	if len(tx.pendingWrites) == 0 {
 		// Read only transaction
-		return nil
+		return nil, nil
 	}
 
-	err = tx.commit(ctx)
+	err, errChan := tx.commit(ctx)
 	if err != nil {
-		return fmt.Errorf("error committing transaction: %w", err)
+		return fmt.Errorf("error committing transaction: %w", err), nil
 	}
 
-	return nil
+	return nil, errChan
 }

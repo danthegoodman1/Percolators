@@ -30,8 +30,8 @@ type (
 	}
 )
 
-func (tx *Txn) Transact(ctx context.Context, fn func(ctx context.Context, tx *Txn) error) error {
-	return fn(ctx, tx)
+func (tx *Txn) Transact(ctx context.Context, fn func(ctx context.Context, tx *Txn) error) (error, chan error) {
+	return fn(ctx, tx), nil // can return nil, since only used at top level
 }
 
 // commit is the top level commit called by the transaction initializer.
@@ -94,6 +94,7 @@ func (tx *Txn) preWriteAll(ctx context.Context) error {
 		lock := rowLock{
 			PrimaryLockKey: tx.primaryLockKey,
 			StartTs:        tx.readTime.UnixNano(),
+			TimeoutTs:      tx.readTime.Add(time.Second * 5).UnixNano(),
 		}
 
 		encodedLock, err := lock.Encode()
@@ -114,9 +115,10 @@ func (tx *Txn) preWriteAll(ctx context.Context) error {
 		})
 	}
 
-	applied, _, err := tx.session.ExecuteBatchCAS(b)
+	// Non-map version was always having applied: false
+	applied, _, err := tx.session.MapExecuteBatchCAS(b, make(map[string]interface{}))
 	if err != nil {
-		return fmt.Errorf("error in ExecuteBatchCAS: %w", err)
+		return fmt.Errorf("error in MapExecuteBatchCAS: %w", err)
 	}
 
 	if !applied {
@@ -134,16 +136,18 @@ func (tx *Txn) writeAll(ctx context.Context) (error, chan error) {
 		lock := rowLock{
 			PrimaryLockKey: tx.primaryLockKey,
 			StartTs:        tx.readTime.UnixNano(),
-		}
+			TimeoutTs:      tx.readTime.Add(time.Second * 5).UnixNano(),
+		} // TODO: timeout ts
 		encodedLock, err := lock.Encode()
 		if err != nil {
 			return fmt.Errorf("error in lock.Encode: %w", err), nil
 		}
 
 		b.Entries = append(b.Entries, gocql.BatchEntry{
-			Stmt: fmt.Sprintf("delete from \"%s\" where key = ? and ts = 0 and col = 'l' and val = ? if exists", tx.table),
+			Stmt: fmt.Sprintf("delete from \"%s\" where key = ? and ts = 0 and col = 'l' if val = ?", tx.table),
 			Args: []any{tx.primaryLockKey, []byte(encodedLock)},
 		})
+		fmt.Println(encodedLock)
 
 		// Insert the write record
 		wr := writeRecord{
@@ -159,13 +163,13 @@ func (tx *Txn) writeAll(ctx context.Context) (error, chan error) {
 			Args: []any{tx.primaryLockKey, tx.writeTime.UnixNano(), []byte(encodedWrite)},
 		})
 
-		applied, _, err := tx.session.ExecuteBatchCAS(b)
+		applied, _, err := tx.session.MapExecuteBatchCAS(b, make(map[string]interface{}))
 		if err != nil {
-			return fmt.Errorf("error in primary lock ExecuteBatchCAS: %w", err), nil
+			return fmt.Errorf("error in primary lock MapExecuteBatchCAS: %w", err), nil
 		}
 
 		if !applied {
-			return fmt.Errorf("%w: primary lock prewrite not applied (confict)", &TxnAborted{}), nil
+			return fmt.Errorf("%w: primary lock write not applied (confict)", &TxnAborted{}), nil
 		}
 	}
 
@@ -183,7 +187,7 @@ func (tx *Txn) writeAll(ctx context.Context) (error, chan error) {
 			lock := rowLock{
 				PrimaryLockKey: tx.primaryLockKey,
 				StartTs:        tx.readTime.UnixNano(),
-			}
+			} // TODO: timeout ts
 			encodedLock, err := lock.Encode()
 			if err != nil {
 				asyncErrChan <- fmt.Errorf("error in lock.Encode: %w", err)
@@ -191,7 +195,7 @@ func (tx *Txn) writeAll(ctx context.Context) (error, chan error) {
 			}
 
 			b.Entries = append(b.Entries, gocql.BatchEntry{
-				Stmt: fmt.Sprintf("delete from \"%s\" where key = ? and ts = 0 and col = 'l' and val = ? if exists", tx.table),
+				Stmt: fmt.Sprintf("delete from \"%s\" where key = ? and ts = 0 and col = 'l' if val = ?", tx.table),
 				Args: []any{tx.primaryLockKey, []byte(encodedLock)},
 			})
 
@@ -226,7 +230,7 @@ func (tx *Txn) getRecord(ctx context.Context, key string, ts time.Time) (*record
 	})
 	// Select the rowLock
 	b.Entries = append(b.Entries, gocql.BatchEntry{
-		Stmt: fmt.Sprintf("select col, ts, val from \"%s\" where key = ? and ts = 0 and col = 'l'"),
+		Stmt: fmt.Sprintf("select col, ts, val from \"%s\" where key = ? and ts = 0 and col = 'l'", tx.table),
 		Args: []any{key},
 	})
 
