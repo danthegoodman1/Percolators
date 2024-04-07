@@ -25,11 +25,12 @@ func NewClient(session *gocql.Session, table string) *Client {
 
 func (c *Client) Transact(ctx context.Context, fn func(ctx context.Context, tx *Txn) error) error {
 	tx := &Txn{
-		session:       c.session,
-		table:         c.table,
-		id:            uuid.New().String(),
-		pendingWrites: make(map[string][]byte),
-		readCache:     make(map[string][]byte),
+		session:        c.session,
+		table:          c.table,
+		id:             uuid.New().String(),
+		pendingWrites:  make(map[string][]byte),
+		readCache:      make(map[string][]byte),
+		isolationLevel: Snapshot,
 	}
 
 	// Get the read timestamp

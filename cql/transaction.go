@@ -27,12 +27,33 @@ type (
 		pendingWrites  map[string][]byte
 		primaryLockKey string
 
-		tableMetadata table.Metadata
+		tableMetadata  table.Metadata
+		isolationLevel IsolationLevel
 	}
+
+	IsolationLevel string
+)
+
+var (
+	// ReadRepeatable means that if there is a commit to a record between read and write, the txn does not abort
+	ReadRepeatable IsolationLevel = "rr"
+	// Snapshot isolation is effectively the same as Serializable
+	Snapshot IsolationLevel = "ss"
 )
 
 func (tx *Txn) Transact(ctx context.Context, fn func(ctx context.Context, tx *Txn) error) error {
 	return fn(ctx, tx)
+}
+
+// SetIsolationLevel sets the highest possible isolation level for the transaction.
+// If it has already been explicitly set at something higher, it cannot be reduced (and will be a no-op).
+// Default Snapshot
+func (tx *Txn) SetIsolationLevel(isolationLevel IsolationLevel) {
+	if tx.isolationLevel == Snapshot && isolationLevel == ReadRepeatable {
+		// Cannot be reduced
+		return
+	}
+	tx.isolationLevel = isolationLevel
 }
 
 // commit is the top level commit called by the transaction initializer.
@@ -85,40 +106,10 @@ func (tx *Txn) preWriteAll(ctx context.Context) error {
 	for key, val := range tx.pendingWrites {
 		// Determine the primary rowLock key
 		tx.primaryLockKey = key
-		b := tx.session.NewBatch(gocql.LoggedBatch).WithContext(ctx)
-		// Write rowLock and data to primary key
-		lock := rowLock{
-			PrimaryLockKey: tx.primaryLockKey,
-			StartTs:        tx.readTime.UnixNano(),
-			TimeoutTs:      tx.readTime.Add(time.Second * 5).UnixNano(),
-			CommitTs:       tx.writeTime.UnixNano(),
-		}
 
-		encodedLock, err := lock.Encode()
+		err := tx.preWrite(ctx, key, val)
 		if err != nil {
-			return fmt.Errorf("error in rowLock.Encode: %w", err)
-		}
-
-		// Insert the lock
-		b.Entries = append(b.Entries, gocql.BatchEntry{
-			Stmt: fmt.Sprintf("insert into \"%s\" (key, ts, col, val) values (?, 0, 'l', ?) if not exists", tx.table),
-			Args: []any{key, []byte(encodedLock)},
-		})
-
-		// Insert the data record
-		b.Entries = append(b.Entries, gocql.BatchEntry{
-			Stmt: fmt.Sprintf("insert into \"%s\" (key, ts, col, val) values (?, ?, 'd', ?) if not exists", tx.table),
-			Args: []any{key, tx.readTime.UnixNano(), val},
-		})
-
-		// Non-map version was always having applied: false
-		applied, _, err := tx.session.MapExecuteBatchCAS(b, make(map[string]interface{}))
-		if err != nil {
-			return fmt.Errorf("error in MapExecuteBatchCAS: %w", err)
-		}
-
-		if !applied {
-			return fmt.Errorf("%w: prewrite not applied (confict)", &TxnAborted{})
+			return fmt.Errorf("error in primary lock prewrite: %w", err)
 		}
 
 		break
@@ -127,50 +118,73 @@ func (tx *Txn) preWriteAll(ctx context.Context) error {
 	// Can do prewrite concurrently
 	g := errgroup.Group{}
 	for key, val := range tx.pendingWrites {
+		if key == tx.primaryLockKey {
+			// Ignore this one
+			continue
+		}
 		g.Go(func() error {
-			b := tx.session.NewBatch(gocql.LoggedBatch).WithContext(ctx)
-			// Write rowLock and data to primary key
-			lock := rowLock{
-				PrimaryLockKey: tx.primaryLockKey,
-				StartTs:        tx.readTime.UnixNano(),
-				TimeoutTs:      tx.readTime.Add(time.Second * 5).UnixNano(),
-				CommitTs:       tx.writeTime.UnixNano(),
-			}
-
-			encodedLock, err := lock.Encode()
-			if err != nil {
-				return fmt.Errorf("error in rowLock.Encode: %w", err)
-			}
-
-			// Insert the lock
-			b.Entries = append(b.Entries, gocql.BatchEntry{
-				Stmt: fmt.Sprintf("insert into \"%s\" (key, ts, col, val) values (?, 0, 'l', ?) if not exists", tx.table),
-				Args: []any{key, []byte(encodedLock)},
-			})
-
-			// Insert the data record
-			b.Entries = append(b.Entries, gocql.BatchEntry{
-				Stmt: fmt.Sprintf("insert into \"%s\" (key, ts, col, val) values (?, ?, 'd', ?) if not exists", tx.table),
-				Args: []any{key, tx.readTime.UnixNano(), val},
-			})
-
-			// Non-map version was always having applied: false
-			applied, _, err := tx.session.MapExecuteBatchCAS(b, make(map[string]interface{}))
-			if err != nil {
-				return fmt.Errorf("error in MapExecuteBatchCAS: %w", err)
-			}
-
-			if !applied {
-				return fmt.Errorf("%w: prewrite not applied (confict)", &TxnAborted{})
-			}
-
-			return nil
+			return tx.preWrite(ctx, key, val)
 		})
 	}
 
 	err := g.Wait()
 	if err != nil {
 		return fmt.Errorf("error in async prewrite: %w", err)
+	}
+
+	return nil
+}
+
+func (tx *Txn) preWrite(ctx context.Context, key string, val []byte) error {
+	b := tx.session.NewBatch(gocql.LoggedBatch).WithContext(ctx)
+	// Write rowLock and data to primary key
+	lock := rowLock{
+		PrimaryLockKey: tx.primaryLockKey,
+		StartTs:        tx.readTime.UnixNano(),
+		TimeoutTs:      tx.readTime.Add(time.Second * 5).UnixNano(),
+		CommitTs:       tx.writeTime.UnixNano(),
+	}
+
+	encodedLock, err := lock.Encode()
+	if err != nil {
+		return fmt.Errorf("error in rowLock.Encode: %w", err)
+	}
+
+	// Insert the lock
+	b.Entries = append(b.Entries, gocql.BatchEntry{
+		Stmt: fmt.Sprintf("insert into \"%s\" (key, ts, col, val) values (?, 0, 'l', ?) if not exists", tx.table),
+		Args: []any{key, []byte(encodedLock)},
+	})
+
+	// Insert the data record
+	b.Entries = append(b.Entries, gocql.BatchEntry{
+		Stmt: fmt.Sprintf("insert into \"%s\" (key, ts, col, val) values (?, ?, 'd', ?) if not exists", tx.table),
+		Args: []any{key, tx.readTime.UnixNano(), val},
+	})
+
+	// Non-map version was always having applied: false
+	applied, _, err := tx.session.MapExecuteBatchCAS(b, make(map[string]interface{}))
+	if err != nil {
+		return fmt.Errorf("error in MapExecuteBatchCAS: %w", err)
+	}
+
+	if !applied {
+		return fmt.Errorf("%w: prewrite not applied (confict)", &TxnAborted{})
+	}
+
+	if tx.isolationLevel == Snapshot || tx.isolationLevel == "" {
+		// Snapshot isolation, verify that there are no write records after our TS
+		// Get the highest write record
+		err = tx.session.Query(fmt.Sprintf("select col, ts, val from \"%s\" where key = ? and ts > ? and col = 'w' order by ts asc limit 1", tx.table), key, tx.readTime.UnixNano()).Consistency(gocql.Quorum).Scan()
+		if errors.Is(err, gocql.ErrNotFound) {
+			// There is nothing higher
+			return nil
+		} else if err != nil {
+			return fmt.Errorf("error scanning snapshot write commit row: %w", err)
+		}
+
+		// Otherwise we found a committed write, and need to abort
+		return fmt.Errorf("%w: Snapshot isolation failure: found committed write higher than read timestamp for key %s", &TxnAborted{}, key)
 	}
 
 	return nil

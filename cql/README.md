@@ -60,6 +60,14 @@ TLDR same thing, only aborts at commit time.
 
 I won’t explain any more features of Percolator (like rolling forward transactions), if you’re interested on how it works and its guarantees, go read the paper (it’s a great read).
 
+## Read Repeatable isolation
+
+Percolator can be tweaked to allow a sort of "read repeatable" (currently still aborts if it finds a running transaction on a row) where instead of checking that there are no commits after our read time during prewrite, we just lock regardless.
+
+While we still have a stable snapshot in time of the database, we do not abort if there was a write to any record between the read timestamp and the commit timestamp.
+
+This can be set with `Transaction.SetIsolationLevel()`, default `Snapshot`. Once explicitly declared as `Snapshot`, it cannot be further reduced to `ReadRepeatable`.
+
 ## Transaction records
 
 This process uses the same format as TiKV's implementation
