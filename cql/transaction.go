@@ -35,26 +35,27 @@ func (tx *Txn) Transact(ctx context.Context, fn func(ctx context.Context, tx *Tx
 }
 
 // commit is the top level commit called by the transaction initializer.
-// It coordinates prewrite and write
-func (tx *Txn) commit(ctx context.Context) error {
+// It coordinates prewrite and write. It returns a synchronous error if the transaction
+// cannot complete, and an async error channel for the async completion of the transaction.
+func (tx *Txn) commit(ctx context.Context) (error, chan error) {
 	ts, err := tx.getTime(ctx)
 	if err != nil {
-		return fmt.Errorf("error getting write timestamp: %w", err)
+		return fmt.Errorf("error getting write timestamp: %w", err), nil
 	}
 
 	tx.writeTime = ts
 
 	err = tx.preWriteAll(ctx)
 	if err != nil {
-		return fmt.Errorf("error in transaction pre write: %w", err)
+		return fmt.Errorf("error in transaction pre write: %w", err), nil
 	}
 
-	err = tx.writeAll(ctx)
+	err, errChan := tx.writeAll(ctx)
 	if err != nil {
-		return fmt.Errorf("error in transaction write: %w", err)
+		return fmt.Errorf("error in transaction write: %w", err), errChan
 	}
 
-	return nil
+	return nil, errChan
 }
 
 var ErrInvalidKey = errors.New("invalid key")
@@ -293,16 +294,19 @@ func (tx *Txn) getRecord(ctx context.Context, key string, ts time.Time) (*record
 // getRange will get a range of records from the DB. If no atTime is provided, then it will abort.
 func (tx *Txn) getRange(ctx context.Context, key string, atTime *time.Time) (*record, error) {
 	// TODO: If existing txn found, roll it forward if we can
+	panic("not implemented")
 }
 
 // rollForward will attempt to roll a transaction forward if possible. Otherwise,
 // it will abort the transaction
 func (tx *Txn) rollForward(ctx context.Context, key string) (*record, error) {
-
+	// TODO: this
+	panic("not implemented")
 }
 
 func (tx *Txn) rollbackOrphanedTxn(ctx context.Context) error {
 	// TODO: walk the linked list in each direction, wait on the primary rowLock until all other records are undone
+	panic("not implemented")
 }
 
 func (tx *Txn) Get(ctx context.Context, key string) ([]byte, error) {
@@ -316,12 +320,12 @@ func (tx *Txn) Get(ctx context.Context, key string) ([]byte, error) {
 		return val, nil
 	}
 
-	rec, err := tx.getRecord(ctx, key, tx.readTime)
+	rec, err := tx.getRecord(ctx, key, *tx.readTime)
 	if err != nil {
 		return nil, fmt.Errorf("error in tx.get: %w", err)
 	}
 
-	return rec.val, nil
+	return rec.Val, nil
 }
 
 // TODO: GetRange (does not use read cache)c
@@ -342,12 +346,7 @@ func (tx *Txn) Delete(key string) {
 }
 
 func (tx *Txn) getTime(ctx context.Context) (*time.Time, error) {
-	row := tx.session.QueryRow(ctx, "select now()")
-	var t time.Time
-	if err := row.Scan(&t); err != nil {
-		return nil, fmt.Errorf("error scanning time: %w", err)
-	}
-
+	t := time.Now()
 	return &t, nil
 }
 
