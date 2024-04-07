@@ -217,6 +217,7 @@ func (tx *Txn) writeAll(ctx context.Context) (error, chan error) {
 // getRecord will get a record from the DB. If no atTime is provided, then it will use the current time.
 func (tx *Txn) getRecord(ctx context.Context, key string, ts time.Time) (*record, error) {
 	b := tx.session.NewBatch(gocql.UnloggedBatch) // can do unlogged since we're only hitting 1 partition (this is the default)
+	rows := make([]record, 2)
 	// Select the data before the timestamp
 	b.Entries = append(b.Entries, gocql.BatchEntry{
 		Stmt: fmt.Sprintf("select col, ts, val from \"%s\" where key = ? and col = 'd' order by ts desc limit 1", tx.table),
@@ -228,8 +229,10 @@ func (tx *Txn) getRecord(ctx context.Context, key string, ts time.Time) (*record
 		Args: []any{key},
 	})
 
-	var m map[string]any
-	applied, iter, err := tx.session.MapExecuteBatchCAS(b, m)
+	rec := record{
+		Key: key,
+	}
+	applied, iter, err := tx.session.ExecuteBatchCAS(b, &rec.Col, &rec.Ts, &rec.Val)
 	if err != nil {
 		return nil, fmt.Errorf("error in MapExecuteBatchCAS: %w", err)
 	}
@@ -237,16 +240,16 @@ func (tx *Txn) getRecord(ctx context.Context, key string, ts time.Time) (*record
 		return nil, fmt.Errorf("%w: not applied", &TxnAborted{})
 	}
 
-	var rows []record
 	scanner := iter.Scanner()
 	for scanner.Next() {
-		rec := record{
+		rec = record{
 			Key: key,
 		}
 		err = scanner.Scan(&rec.Col, &rec.Ts, &rec.Val)
 		if err != nil {
 			return nil, fmt.Errorf("error scanning row: %w", err)
 		}
+		rows[1] = rec
 	}
 
 	// Check if either has a rowLock
