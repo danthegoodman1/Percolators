@@ -274,7 +274,7 @@ func (tx *Txn) getRecord(ctx context.Context, key string, ts time.Time) (*record
 	dataRec := record{
 		Key: key,
 	}
-	err = tx.session.Query(fmt.Sprintf("select col, ts, val from \"%s\" where key = ? and col = 'd' order by ts desc limit 1", tx.table), key).Consistency(gocql.Quorum).Scan(&dataRec.Col, &dataRec.Ts, &dataRec.Val)
+	err = tx.session.Query(fmt.Sprintf("select col, ts, val from \"%s\" where key = ? and col = 'd' and ts < ? order by ts desc limit 1", tx.table), key, tx.readTime.UnixNano()).Consistency(gocql.Quorum).Scan(&dataRec.Col, &dataRec.Ts, &dataRec.Val)
 	if errors.Is(err, gocql.ErrNotFound) {
 		return nil, nil
 	} else if err != nil {
