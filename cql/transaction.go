@@ -81,7 +81,7 @@ func parseLockKey(key string) (id string, lockTime time.Time, primaryKey string,
 }
 
 func (tx *Txn) preWriteAll(ctx context.Context) error {
-	for key, _ := range tx.pendingWrites {
+	for key := range tx.pendingWrites {
 		// Determine the primary rowLock key
 		tx.primaryLockKey = key
 		break
@@ -176,7 +176,7 @@ func (tx *Txn) writeAll(ctx context.Context) (error, chan error) {
 	// Update the rest of the keys with write record async (any future reads will roll forward)
 	go func(ctx context.Context, asyncErrChan chan error) {
 		b := tx.session.NewBatch(gocql.UnloggedBatch).WithContext(ctx)
-		for key, _ := range tx.pendingWrites {
+		for key := range tx.pendingWrites {
 			if key == tx.primaryLockKey {
 				// Ignore this one, we already handled it
 				continue
