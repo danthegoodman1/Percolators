@@ -3,6 +3,7 @@ package cql
 import (
 	"context"
 	"fmt"
+	"math"
 	"testing"
 )
 
@@ -58,6 +59,254 @@ func TestSingleTransactionReadWrite(t *testing.T) {
 				return fmt.Errorf("error in tx.Get: %w", err)
 			}
 			fmt.Println("got networked val", string(val))
+
+			return nil
+		})
+	}(c)
+
+	if err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestRollForward(t *testing.T) {
+	s, err := setupTest()
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	c := NewClient(s, "testkv")
+
+	key := "rollfwd"
+	pkey := "pkeyrollfwd"
+	wr := writeRecord{
+		StartTimeNS: 1,
+	}
+	wrEncoded, err := wr.Encode()
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	lockRec := rowLock{
+		PrimaryLockKey: pkey,
+		StartTs:        1,
+		CommitTs:       2,
+		TimeoutTs:      math.MaxInt64,
+	}
+	encodedLock, err := lockRec.Encode()
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// The secondary write
+	err = c.session.Query("insert into testkv (key, ts, col, val) values (?, ?, 'd', ?)", key, lockRec.StartTs, []byte("rolled fwd")).Exec()
+	if err != nil {
+		t.Fatal(err)
+	}
+	err = c.session.Query("insert into testkv (key, ts, col, val) values (?, ?, 'l', ?)", key, 0, encodedLock).Exec()
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// The primary lock
+	err = c.session.Query("insert into testkv (key, ts, col, val) values (?, ?, 'd', ?)", pkey, lockRec.StartTs, []byte("primary rolled fwd")).Exec()
+	if err != nil {
+		t.Fatal(err)
+	}
+	err = c.session.Query("insert into testkv (key, ts, col, val) values (?, ?, 'w', ?)", pkey, lockRec.CommitTs, []byte(wrEncoded)).Exec()
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// Do the txn that reads it
+	err, _ = func(t Transactable) (error, chan error) {
+		return t.Transact(context.Background(), func(ctx context.Context, tx *Txn) error {
+			// Read networked val
+			val, err := tx.Get(ctx, key)
+			if err != nil {
+				return fmt.Errorf("error in tx.Get: %w", err)
+			}
+			fmt.Println("got rolled forward val:", string(val))
+
+			return nil
+		})
+	}(c)
+
+	if err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestRollBackPrimaryExpired(t *testing.T) {
+	s, err := setupTest()
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	c := NewClient(s, "testkv")
+
+	key := "rollbackexpr"
+	pkey := "pkeyrollbackexpr"
+
+	lockRec := rowLock{
+		PrimaryLockKey: pkey,
+		StartTs:        1,
+		CommitTs:       2,
+		TimeoutTs:      0,
+	}
+	encodedLock, err := lockRec.Encode()
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// The secondary write
+	err = c.session.Query("insert into testkv (key, ts, col, val) values (?, ?, 'd', ?)", key, 0, []byte("rolled back")).Exec()
+	if err != nil {
+		t.Fatal(err)
+	}
+	err = c.session.Query("insert into testkv (key, ts, col, val) values (?, ?, 'd', ?)", key, lockRec.StartTs, []byte("rolled fwd")).Exec()
+	if err != nil {
+		t.Fatal(err)
+	}
+	err = c.session.Query("insert into testkv (key, ts, col, val) values (?, ?, 'l', ?)", key, 0, encodedLock).Exec()
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// The primary lock
+	primaryLockRec := rowLock{
+		PrimaryLockKey: pkey,
+		StartTs:        1,
+		CommitTs:       2,
+		TimeoutTs:      0,
+	}
+	primaryEncodedLock, err := primaryLockRec.Encode()
+	if err != nil {
+		t.Fatal(err)
+	}
+	err = c.session.Query("insert into testkv (key, ts, col, val) values (?, ?, 'l', ?)", pkey, 0, primaryEncodedLock).Exec()
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// Do the txn that reads it
+	err, _ = func(t Transactable) (error, chan error) {
+		return t.Transact(context.Background(), func(ctx context.Context, tx *Txn) error {
+			// Read networked val
+			val, err := tx.Get(ctx, key)
+			if err != nil {
+				return fmt.Errorf("error in tx.Get: %w", err)
+			}
+			fmt.Println("got rolled back val:", string(val))
+
+			return nil
+		})
+	}(c)
+
+	if err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestRollBackPrimaryExpiredIsPrimary(t *testing.T) {
+	s, err := setupTest()
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	c := NewClient(s, "testkv")
+
+	pkey := "pkeyrollbackexpr-iampk"
+
+	lockRec := rowLock{
+		PrimaryLockKey: pkey,
+		StartTs:        1,
+		CommitTs:       2,
+		TimeoutTs:      0,
+	}
+	encodedLock, err := lockRec.Encode()
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// The secondary write
+	err = c.session.Query("insert into testkv (key, ts, col, val) values (?, ?, 'd', ?)", pkey, 0, []byte("rolled back")).Exec()
+	if err != nil {
+		t.Fatal(err)
+	}
+	err = c.session.Query("insert into testkv (key, ts, col, val) values (?, ?, 'd', ?)", pkey, lockRec.StartTs, []byte("rolled fwd")).Exec()
+	if err != nil {
+		t.Fatal(err)
+	}
+	err = c.session.Query("insert into testkv (key, ts, col, val) values (?, ?, 'l', ?)", pkey, 0, encodedLock).Exec()
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// Do the txn that reads it
+	err, _ = func(t Transactable) (error, chan error) {
+		return t.Transact(context.Background(), func(ctx context.Context, tx *Txn) error {
+			// Read networked val
+			val, err := tx.Get(ctx, pkey)
+			if err != nil {
+				return fmt.Errorf("error in tx.Get: %w", err)
+			}
+			fmt.Println("got rolled back val:", string(val))
+
+			return nil
+		})
+	}(c)
+
+	if err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestRollBackNoPrimary(t *testing.T) {
+	s, err := setupTest()
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	c := NewClient(s, "testkv")
+
+	key := "rollbackexpr"
+	pkey := "pkeyrollbackexpr"
+
+	lockRec := rowLock{
+		PrimaryLockKey: pkey,
+		StartTs:        1,
+		CommitTs:       2,
+		TimeoutTs:      0,
+	}
+	encodedLock, err := lockRec.Encode()
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// The secondary write
+	err = c.session.Query("insert into testkv (key, ts, col, val) values (?, ?, 'd', ?)", key, 0, []byte("rolled back")).Exec()
+	if err != nil {
+		t.Fatal(err)
+	}
+	err = c.session.Query("insert into testkv (key, ts, col, val) values (?, ?, 'd', ?)", key, lockRec.StartTs, []byte("rolled fwd")).Exec()
+	if err != nil {
+		t.Fatal(err)
+	}
+	err = c.session.Query("insert into testkv (key, ts, col, val) values (?, ?, 'l', ?)", key, 0, encodedLock).Exec()
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// Do the txn that reads it
+	err, _ = func(t Transactable) (error, chan error) {
+		return t.Transact(context.Background(), func(ctx context.Context, tx *Txn) error {
+			// Read networked val
+			val, err := tx.Get(ctx, key)
+			if err != nil {
+				return fmt.Errorf("error in tx.Get: %w", err)
+			}
+			fmt.Println("got rolled back val:", string(val))
 
 			return nil
 		})
