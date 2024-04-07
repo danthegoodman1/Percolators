@@ -87,7 +87,7 @@ func (tx *Txn) preWriteAll(ctx context.Context) error {
 		break
 	}
 
-	b := tx.session.NewBatch(gocql.UnloggedBatch).WithContext(ctx)
+	b := tx.session.NewBatch(gocql.LoggedBatch).WithContext(ctx)
 
 	for key, val := range tx.pendingWrites {
 		// Write rowLock and data to primary key
@@ -132,7 +132,7 @@ func (tx *Txn) preWriteAll(ctx context.Context) error {
 func (tx *Txn) writeAll(ctx context.Context) error {
 	// Primary rowLock commit
 	{
-		b := tx.session.NewBatch(gocql.UnloggedBatch).WithContext(ctx)
+		b := tx.session.NewBatch(gocql.LoggedBatch).WithContext(ctx)
 		// Remove the lock (encode is deterministic)
 		lock := rowLock{
 			PrimaryLockKey: tx.primaryLockKey,
@@ -176,7 +176,7 @@ func (tx *Txn) writeAll(ctx context.Context) error {
 
 	// Update the rest of the keys with write record async (any future reads will roll forward)
 	go func(ctx context.Context) {
-		b := tx.session.NewBatch(gocql.UnloggedBatch).WithContext(ctx)
+		b := tx.session.NewBatch(gocql.LoggedBatch).WithContext(ctx)
 		for key := range tx.pendingWrites {
 			if key == tx.primaryLockKey {
 				// Ignore this one, we already handled it
@@ -356,7 +356,7 @@ func (tx *Txn) getRange(ctx context.Context, key string, atTime *time.Time) (*re
 // rollForward will attempt to roll a transaction forward if possible. Otherwise,
 // it will abort the transaction
 func (tx *Txn) rollForward(ctx context.Context, key string, lock rowLock) error {
-	b := tx.session.NewBatch(gocql.UnloggedBatch).WithContext(ctx)
+	b := tx.session.NewBatch(gocql.LoggedBatch).WithContext(ctx)
 	// Remove the lock (encode is deterministic)
 	encodedLock, err := lock.Encode()
 	if err != nil {
@@ -396,7 +396,7 @@ func (tx *Txn) rollForward(ctx context.Context, key string, lock rowLock) error 
 
 func (tx *Txn) rollBackTxn(ctx context.Context, key string, ts int64, lockRec []byte) error {
 	// If the txn is expired, roll it back
-	b := tx.session.NewBatch(gocql.UnloggedBatch).WithContext(ctx)
+	b := tx.session.NewBatch(gocql.LoggedBatch).WithContext(ctx)
 	// Delete the lock
 	b.Entries = append(b.Entries, gocql.BatchEntry{
 		Stmt: fmt.Sprintf("delete from \"%s\" where key = ? and ts = 0 and col = 'l' if val = ?", tx.table),
