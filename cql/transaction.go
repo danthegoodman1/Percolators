@@ -7,8 +7,6 @@ import (
 	"github.com/gocql/gocql"
 	"github.com/scylladb/gocqlx/v2/table"
 	"golang.org/x/sync/errgroup"
-	"strconv"
-	"strings"
 	"time"
 )
 
@@ -78,28 +76,6 @@ func (tx *Txn) commit(ctx context.Context) error {
 	}
 
 	return nil
-}
-
-var ErrInvalidKey = errors.New("invalid key")
-
-func parseLockKey(key string) (id string, lockTime time.Time, primaryKey string, err error) {
-	parts := strings.Split(key, "::")
-	if len(parts) != 3 {
-		err = ErrInvalidKey
-		return
-	}
-
-	id = parts[0]
-
-	parsed, err := strconv.Atoi(parts[1])
-	if err != nil {
-		return
-	}
-
-	lockTime = time.Unix(0, int64(parsed))
-	primaryKey = parts[3]
-
-	return
 }
 
 func (tx *Txn) preWriteAll(ctx context.Context) error {
