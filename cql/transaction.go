@@ -87,7 +87,7 @@ func (tx *Txn) preWriteAll(ctx context.Context) error {
 		break
 	}
 
-	b := tx.session.NewBatch(gocql.UnloggedBatch)
+	b := tx.session.NewBatch(gocql.UnloggedBatch).WithContext(ctx)
 
 	for key, val := range tx.pendingWrites {
 		// Write rowLock and data to primary key
@@ -131,7 +131,7 @@ func (tx *Txn) preWriteAll(ctx context.Context) error {
 func (tx *Txn) writeAll(ctx context.Context) (error, chan error) {
 	// Primary rowLock commit
 	{
-		b := tx.session.NewBatch(gocql.UnloggedBatch)
+		b := tx.session.NewBatch(gocql.UnloggedBatch).WithContext(ctx)
 		// Remove the lock (encode is deterministic)
 		lock := rowLock{
 			PrimaryLockKey: tx.primaryLockKey,
@@ -174,8 +174,8 @@ func (tx *Txn) writeAll(ctx context.Context) (error, chan error) {
 
 	asyncErrChan := make(chan error, 1)
 	// Update the rest of the keys with write record async (any future reads will roll forward)
-	go func(asyncErrChan chan error) {
-		b := tx.session.NewBatch(gocql.UnloggedBatch)
+	go func(ctx context.Context, asyncErrChan chan error) {
+		b := tx.session.NewBatch(gocql.UnloggedBatch).WithContext(ctx)
 		for key, _ := range tx.pendingWrites {
 			if key == tx.primaryLockKey {
 				// Ignore this one, we already handled it
@@ -213,7 +213,7 @@ func (tx *Txn) writeAll(ctx context.Context) (error, chan error) {
 				Args: []any{tx.primaryLockKey, tx.writeTime.UnixNano(), []byte(encodedWrite)},
 			})
 		}
-	}(asyncErrChan)
+	}(ctx, asyncErrChan)
 
 	return nil, asyncErrChan
 }
@@ -251,7 +251,7 @@ func (tx *Txn) getRecord(ctx context.Context, key string, ts time.Time) (*record
 			// We are the primary
 			if lock.TimeoutTs <= time.Now().UnixNano() {
 				// Roll it back
-				b := tx.session.NewBatch(gocql.UnloggedBatch)
+				b := tx.session.NewBatch(gocql.UnloggedBatch).WithContext(ctx)
 				b.Entries = append(b.Entries, gocql.BatchEntry{
 					Stmt: fmt.Sprintf("delete from \"%s\" where key = ? and ts = 0 and col = 'l' if val = ?", tx.table),
 					Args: []any{tx.primaryLockKey, lockRec.Val},
