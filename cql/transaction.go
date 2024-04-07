@@ -30,32 +30,32 @@ type (
 	}
 )
 
-func (tx *Txn) Transact(ctx context.Context, fn func(ctx context.Context, tx *Txn) error) (error, chan error) {
-	return fn(ctx, tx), nil // can return nil, since only used at top level
+func (tx *Txn) Transact(ctx context.Context, fn func(ctx context.Context, tx *Txn) error) error {
+	return fn(ctx, tx)
 }
 
 // commit is the top level commit called by the transaction initializer.
 // It coordinates prewrite and write. It returns a synchronous error if the transaction
 // cannot complete, and an async error channel for the async completion of the transaction.
-func (tx *Txn) commit(ctx context.Context) (error, chan error) {
+func (tx *Txn) commit(ctx context.Context) error {
 	ts, err := tx.getTime(ctx)
 	if err != nil {
-		return fmt.Errorf("error getting write timestamp: %w", err), nil
+		return fmt.Errorf("error getting write timestamp: %w", err)
 	}
 
 	tx.writeTime = ts
 
 	err = tx.preWriteAll(ctx)
 	if err != nil {
-		return fmt.Errorf("error in transaction pre write: %w", err), nil
+		return fmt.Errorf("error in transaction pre write: %w", err)
 	}
 
-	err, errChan := tx.writeAll(ctx)
+	err = tx.writeAll(ctx)
 	if err != nil {
-		return fmt.Errorf("error in transaction write: %w", err), errChan
+		return fmt.Errorf("error in transaction write: %w", err)
 	}
 
-	return nil, errChan
+	return nil
 }
 
 var ErrInvalidKey = errors.New("invalid key")
@@ -129,7 +129,7 @@ func (tx *Txn) preWriteAll(ctx context.Context) error {
 	return nil
 }
 
-func (tx *Txn) writeAll(ctx context.Context) (error, chan error) {
+func (tx *Txn) writeAll(ctx context.Context) error {
 	// Primary rowLock commit
 	{
 		b := tx.session.NewBatch(gocql.UnloggedBatch).WithContext(ctx)
@@ -142,7 +142,7 @@ func (tx *Txn) writeAll(ctx context.Context) (error, chan error) {
 		}
 		encodedLock, err := lock.Encode()
 		if err != nil {
-			return fmt.Errorf("error in lock.Encode: %w", err), nil
+			return fmt.Errorf("error in lock.Encode: %w", err)
 		}
 
 		b.Entries = append(b.Entries, gocql.BatchEntry{
@@ -156,7 +156,7 @@ func (tx *Txn) writeAll(ctx context.Context) (error, chan error) {
 		}
 		encodedWrite, err := wr.Encode()
 		if err != nil {
-			return fmt.Errorf("error in writeRecord.Encode: %w", err), nil
+			return fmt.Errorf("error in writeRecord.Encode: %w", err)
 		}
 
 		b.Entries = append(b.Entries, gocql.BatchEntry{
@@ -166,17 +166,16 @@ func (tx *Txn) writeAll(ctx context.Context) (error, chan error) {
 
 		applied, _, err := tx.session.MapExecuteBatchCAS(b, make(map[string]interface{}))
 		if err != nil {
-			return fmt.Errorf("error in primary lock MapExecuteBatchCAS: %w", err), nil
+			return fmt.Errorf("error in primary lock MapExecuteBatchCAS: %w", err)
 		}
 
 		if !applied {
-			return fmt.Errorf("%w: primary lock write not applied (confict)", &TxnAborted{}), nil
+			return fmt.Errorf("%w: primary lock write not applied (confict)", &TxnAborted{})
 		}
 	}
 
-	asyncErrChan := make(chan error, 1)
 	// Update the rest of the keys with write record async (any future reads will roll forward)
-	go func(ctx context.Context, asyncErrChan chan error) {
+	go func(ctx context.Context) {
 		b := tx.session.NewBatch(gocql.UnloggedBatch).WithContext(ctx)
 		for key := range tx.pendingWrites {
 			if key == tx.primaryLockKey {
@@ -193,7 +192,7 @@ func (tx *Txn) writeAll(ctx context.Context) (error, chan error) {
 			}
 			encodedLock, err := lock.Encode()
 			if err != nil {
-				asyncErrChan <- fmt.Errorf("error in lock.Encode: %w", err)
+				// TODO fmt.Errorf("error in lock.Encode: %w", err)
 				return
 			}
 
@@ -208,7 +207,7 @@ func (tx *Txn) writeAll(ctx context.Context) (error, chan error) {
 			}
 			encodedWrite, err := wr.Encode()
 			if err != nil {
-				asyncErrChan <- fmt.Errorf("error in writeRecord.Encode: %w", err)
+				// TODO: fmt.Errorf("error in writeRecord.Encode: %w", err)
 				return
 			}
 
@@ -217,14 +216,13 @@ func (tx *Txn) writeAll(ctx context.Context) (error, chan error) {
 				Args: []any{tx.primaryLockKey, tx.writeTime.UnixNano(), []byte(encodedWrite)},
 			})
 		}
-	}(ctx, asyncErrChan)
+	}(ctx)
 
-	return nil, asyncErrChan
+	return nil
 }
 
 // getRecord will get a record from the DB.
 func (tx *Txn) getRecord(ctx context.Context, key string, ts time.Time) (*record, error) {
-	fmt.Println("getting key", key)
 	lockRec := record{
 		Key: key,
 	}
@@ -248,7 +246,6 @@ func (tx *Txn) getRecord(ctx context.Context, key string, ts time.Time) (*record
 
 	// Check if we found a row lock
 	if foundLock {
-		fmt.Println("found lock")
 		lock, err := parseLock(string(lockRec.Val))
 		if err != nil {
 			return nil, fmt.Errorf("error in parseLock: %w", err)
@@ -277,7 +274,6 @@ func (tx *Txn) getRecord(ctx context.Context, key string, ts time.Time) (*record
 
 		if primaryLock != nil && primaryLock.TimeoutTs <= time.Now().UnixNano() {
 			// The transaction has expired, roll it back
-			fmt.Println("primary lock expired, rolling back")
 			err = tx.rollBackTxn(ctx, key, lock.StartTs, lockRec.Val)
 			if err != nil {
 				return nil, fmt.Errorf("error in tx.rollBackTxn: %w", err)
@@ -288,7 +284,6 @@ func (tx *Txn) getRecord(ctx context.Context, key string, ts time.Time) (*record
 		}
 
 		if primaryLock == nil {
-			fmt.Println("did not find primary lock, checking for write records above", lock.StartTs)
 			// We must check for the write record
 			foundCommitWrite := false
 			iter := tx.session.Query(fmt.Sprintf("select col, ts, val from \"%s\" where key = ? and ts > ? and col = 'w' order by ts asc", tx.table), lock.PrimaryLockKey, lock.StartTs).Consistency(gocql.Quorum).Iter()
@@ -309,8 +304,6 @@ func (tx *Txn) getRecord(ctx context.Context, key string, ts time.Time) (*record
 					return nil, fmt.Errorf("error in parseWriteRecord: %w", err)
 				}
 
-				fmt.Println("got write record", rec, string(rec.Val), wr.StartTimeNS, lock.StartTs)
-
 				if wr.StartTimeNS == lock.StartTs {
 					// We found the write record, we can abort
 					foundCommitWrite = true
@@ -325,10 +318,7 @@ func (tx *Txn) getRecord(ctx context.Context, key string, ts time.Time) (*record
 				}
 			}
 
-			fmt.Println("primary lock", primaryLock)
-
 			if foundCommitWrite {
-				fmt.Println("found commit write")
 				// Txn is committed, roll the transaction forward
 				err = tx.rollForward(ctx, key, *lock)
 				if err != nil {
@@ -340,7 +330,6 @@ func (tx *Txn) getRecord(ctx context.Context, key string, ts time.Time) (*record
 			}
 
 			// Otherwise the primary lock was rolled back, so we need to as well
-			fmt.Println("no primary lock found, rolling back")
 			err = tx.rollBackTxn(ctx, key, lock.StartTs, lockRec.Val)
 			if err != nil {
 				return nil, fmt.Errorf("error in tx.rollBackTxn: %w", err)
@@ -367,7 +356,6 @@ func (tx *Txn) getRange(ctx context.Context, key string, atTime *time.Time) (*re
 // rollForward will attempt to roll a transaction forward if possible. Otherwise,
 // it will abort the transaction
 func (tx *Txn) rollForward(ctx context.Context, key string, lock rowLock) error {
-	fmt.Println("rolling forward", key)
 	b := tx.session.NewBatch(gocql.UnloggedBatch).WithContext(ctx)
 	// Remove the lock (encode is deterministic)
 	encodedLock, err := lock.Encode()
@@ -407,7 +395,6 @@ func (tx *Txn) rollForward(ctx context.Context, key string, lock rowLock) error 
 }
 
 func (tx *Txn) rollBackTxn(ctx context.Context, key string, ts int64, lockRec []byte) error {
-	fmt.Println("rolling back key", key, "at time", ts, "lock", string(lockRec))
 	// If the txn is expired, roll it back
 	b := tx.session.NewBatch(gocql.UnloggedBatch).WithContext(ctx)
 	// Delete the lock
@@ -434,13 +421,11 @@ func (tx *Txn) rollBackTxn(ctx context.Context, key string, ts int64, lockRec []
 func (tx *Txn) Get(ctx context.Context, key string) ([]byte, error) {
 	// Check the read cache
 	if val, exists := tx.readCache[key]; exists {
-		fmt.Println("got from read cache")
 		return val, nil
 	}
 
 	// Check the pending writes
 	if val, exists := tx.pendingWrites[key]; exists {
-		fmt.Println("got from write cache")
 		return val, nil
 	}
 
