@@ -98,8 +98,13 @@ Once the primary lock is fully committed, the top-level `Transact` call exits, a
 
 This is acceptable because of the 2-phase commit, we know that if the rest of the commit fails, another transaction will be able to roll forward any partial commits found on secondary writes.
 
+## Timeouts
+
+By default, transactions have a 5-second timeout (the child context will be given a timeout). If a context with a deadline is a provided, then the timeout will use that instead. BE CAREFUL when using timeouts longer than 5 seconds, as this increases the chance of contention and stalls (e.g. a transaction dies, and another cannot clean up because the timeout has not passed).
+
 ## Pro tips
 
 1. Use composable transactions
 2. Don’t worry about passing info into transaction functions, just read it again (it’s cached by txn)
 3. Don’t use long or massive transactions. The longer they are, the more likely there will be a conflict at commit time (and the consequence of retrying it is higher). Writing a lot of data will also take longer.
+4. Retry transactions, and let their backoff window be longer than the transaction timeout (in case you discover a freshly abandoned transaction). Generally leaving the transaction timeout at 5s is a smart idea. You can easily rip the old deadline off a context while preserving its value by using `context.WithoutCancel()`, and letting the transaction client automatically add the 5-second deadline back in

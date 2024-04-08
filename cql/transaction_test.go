@@ -20,7 +20,7 @@ func TestSingleTransactionWrite(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	c := NewClient(s, "testkv")
+	c := NewClient(s, "testkv", OnLockReadPrevious)
 
 	err = func(t Transactable) error {
 		return t.Transact(context.Background(), func(ctx context.Context, tx *Txn) error {
@@ -40,7 +40,7 @@ func TestSingleTransactionReadWriteSnapshot(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	c := NewClient(s, "testkv")
+	c := NewClient(s, "testkv", OnLockReadPrevious)
 
 	err = func(t Transactable) error {
 		return t.Transact(context.Background(), func(ctx context.Context, tx *Txn) error {
@@ -75,7 +75,7 @@ func TestSingleTransactionReadWriteReadRepeatable(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	c := NewClient(s, "testkv")
+	c := NewClient(s, "testkv", OnLockReadPrevious)
 
 	err = func(t Transactable) error {
 		return t.Transact(context.Background(), func(ctx context.Context, tx *Txn) error {
@@ -112,7 +112,7 @@ func TestRollForward(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	c := NewClient(s, "testkv")
+	c := NewClient(s, "testkv", OnLockReadPrevious)
 
 	key := "rollfwd"
 	pkey := "pkeyrollfwd"
@@ -180,7 +180,7 @@ func TestRollBackPrimaryExpired(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	c := NewClient(s, "testkv")
+	c := NewClient(s, "testkv", OnLockReadPrevious)
 
 	key := "rollbackexpr"
 	pkey := "pkeyrollbackexpr"
@@ -251,7 +251,7 @@ func TestRollBackPrimaryExpiredIsPrimary(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	c := NewClient(s, "testkv")
+	c := NewClient(s, "testkv", OnLockReadPrevious)
 
 	pkey := "pkeyrollbackexpr-iampk"
 
@@ -305,7 +305,7 @@ func TestRollBackNoPrimary(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	c := NewClient(s, "testkv")
+	c := NewClient(s, "testkv", OnLockReadPrevious)
 
 	key := "rollbackexpr"
 	pkey := "pkeyrollbackexpr"
@@ -360,7 +360,7 @@ func TestRollBackAbort(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	c := NewClient(s, "testkv")
+	c := NewClient(s, "testkv", OnLockReadPrevious)
 
 	key := "rollbackexpr-abort"
 

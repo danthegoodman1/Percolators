@@ -25,8 +25,11 @@ type (
 		pendingWrites  map[string][]byte
 		primaryLockKey string
 
+		timeout time.Time
+
 		tableMetadata  table.Metadata
 		isolationLevel IsolationLevel
+		onLock         LockBehavior
 	}
 
 	IsolationLevel string
@@ -117,7 +120,7 @@ func (tx *Txn) preWrite(ctx context.Context, key string, val []byte) error {
 	lock := rowLock{
 		PrimaryLockKey: tx.primaryLockKey,
 		StartTs:        tx.readTime.UnixNano(),
-		TimeoutTs:      tx.readTime.Add(time.Second * 5).UnixNano(),
+		TimeoutTs:      tx.timeout.UnixNano(),
 		CommitTs:       tx.writeTime.UnixNano(),
 	}
 
@@ -174,7 +177,7 @@ func (tx *Txn) writeAll(ctx context.Context) error {
 		lock := rowLock{
 			PrimaryLockKey: tx.primaryLockKey,
 			StartTs:        tx.readTime.UnixNano(),
-			TimeoutTs:      tx.readTime.Add(time.Second * 5).UnixNano(),
+			TimeoutTs:      tx.timeout.UnixNano(),
 			CommitTs:       tx.writeTime.UnixNano(),
 		}
 		encodedLock, err := lock.Encode()
@@ -376,7 +379,13 @@ func (tx *Txn) getRecord(ctx context.Context, key string, ts time.Time) (*record
 			return tx.getRecord(ctx, key, ts)
 		}
 
-		// Otherwise the txn is in progress, and we must abort
+		// Otherwise the txn is in progress
+		if tx.onLock == OnLockReadPrevious {
+			// Try to read a previous value (1ns before)
+			return tx.getRecord(ctx, key, time.Unix(0, lock.StartTs).Add(-time.Nanosecond))
+		}
+
+		// Abort
 		return nil, fmt.Errorf("%w: existing lock found on %s (another txn in progress)", &TxnAborted{}, key)
 	}
 

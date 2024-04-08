@@ -5,25 +5,49 @@ import (
 	"fmt"
 	"github.com/gocql/gocql"
 	"github.com/google/uuid"
+	"time"
 )
 
 type (
 	Client struct {
 		session *gocql.Session
 		table   string
+		onLock  LockBehavior
 	}
+
+	// LockBehavior is the behavior when a live lock is discovered during a transaction.
+	// Default OnLockAbort
+	LockBehavior string
 )
 
-func NewClient(session *gocql.Session, table string) *Client {
+var (
+	// OnLockAbort aborts the transaction when a live lock is found
+	OnLockAbort LockBehavior = "Abort"
+	// OnLockReadPrevious reads a previous committed value (if exists) when a live lock is found.
+	// The transaction will still abort at commit time if you attempt to write to the key
+	// and a later write has committed, or the lock is still active.
+	OnLockReadPrevious LockBehavior = "ReadPrevious"
+)
+
+func NewClient(session *gocql.Session, table string, onLock LockBehavior) *Client {
 	c := &Client{
 		session: session,
 		table:   table,
+		onLock:  onLock,
 	}
 
 	return c
 }
 
 func (c *Client) Transact(ctx context.Context, fn func(ctx context.Context, tx *Txn) error) error {
+	timeout := time.Now().Add(time.Second * 5)
+	if deadline, ok := ctx.Deadline(); ok {
+		timeout = deadline
+	} else {
+		var cancel context.CancelFunc
+		ctx, cancel = context.WithTimeout(ctx, time.Second*5)
+		defer cancel()
+	}
 	tx := &Txn{
 		session:        c.session,
 		table:          c.table,
@@ -31,6 +55,8 @@ func (c *Client) Transact(ctx context.Context, fn func(ctx context.Context, tx *
 		pendingWrites:  make(map[string][]byte),
 		readCache:      make(map[string][]byte),
 		isolationLevel: Snapshot,
+		onLock:         c.onLock,
+		timeout:        timeout,
 	}
 
 	// Get the read timestamp
