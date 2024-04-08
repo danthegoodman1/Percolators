@@ -353,3 +353,82 @@ func TestRollBackNoPrimary(t *testing.T) {
 		t.Fatal(err)
 	}
 }
+
+func TestRollBackAbort(t *testing.T) {
+	s, err := setupTest()
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	c := NewClient(s, "testkv")
+
+	key := "rollbackexpr-abort"
+
+	// Do the txn that reads it
+	err = func(t Transactable) error {
+		return t.Transact(context.Background(), func(ctx context.Context, tx *Txn) error {
+			// Read networked val
+			val, err := tx.Get(ctx, key)
+			if err != nil {
+				return fmt.Errorf("error in tx.Get: %w", err)
+			}
+			if val != nil {
+				return fmt.Errorf("got a value? expected nil")
+			}
+
+			tx.Write(key, []byte("blah"))
+
+			val, err = tx.Get(ctx, key)
+			if err != nil {
+				return fmt.Errorf("error in tx.Get: %w", err)
+			}
+
+			fmt.Println("got wrote val:", string(val))
+
+			return nil
+		})
+	}(c)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// Abort a transaction that edits it
+	err = func(t Transactable) error {
+		return t.Transact(context.Background(), func(ctx context.Context, tx *Txn) error {
+			// Read networked val
+			_, err := tx.Get(ctx, key)
+			if err != nil {
+				return fmt.Errorf("error in tx.Get: %w", err)
+			}
+
+			// Write something
+			tx.Write(key, []byte("i will not show I'm aborted"))
+
+			fmt.Println("aborting txn")
+
+			return fmt.Errorf("I am some error")
+		})
+	}(c)
+	if err == nil {
+		t.Fatal("did not abort")
+	}
+
+	// Verify it's still the correct value
+	err = func(t Transactable) error {
+		return t.Transact(context.Background(), func(ctx context.Context, tx *Txn) error {
+			// Read networked val
+			val, err := tx.Get(ctx, key)
+			if err != nil {
+				return fmt.Errorf("error in tx.Get: %w", err)
+			}
+			if string(val) != "blah" {
+				return fmt.Errorf("got unexpected value")
+			}
+
+			return nil
+		})
+	}(c)
+	if err != nil {
+		t.Fatal(err)
+	}
+}
