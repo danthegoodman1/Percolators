@@ -26,6 +26,7 @@ var (
 	// OnLockReadPrevious reads a previous committed value (if exists) when a live lock is found.
 	// The transaction will still abort at commit time if you attempt to write to the key
 	// and a later write has committed, or the lock is still active.
+	// This is useful for read-only queries, as they will never abort.
 	OnLockReadPrevious LockBehavior = "ReadPrevious"
 )
 

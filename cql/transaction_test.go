@@ -432,3 +432,41 @@ func TestRollBackAbort(t *testing.T) {
 		t.Fatal(err)
 	}
 }
+
+func TestComposableTransactions(t *testing.T) {
+	s, err := setupTest()
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	doAnotherThing := func(t Transactable, someReadKey string) error {
+		return t.Transact(context.Background(), func(ctx context.Context, tx *Txn) error {
+			// Read the key (cached)
+			val, err := tx.Get(ctx, someReadKey)
+			if err != nil {
+				return fmt.Errorf("error in tx.Get: %w", err)
+			}
+			if string(val) != "i'm a val" {
+				return fmt.Errorf("got unexpected value: %s", string(val))
+			}
+
+			return nil
+		})
+	}
+
+	doSomething := func(t Transactable, someWriteKey string) error {
+		return t.Transact(context.Background(), func(ctx context.Context, tx *Txn) error {
+			// Write the key
+			tx.Write(someWriteKey, []byte("i'm a val"))
+
+			return doAnotherThing(tx, someWriteKey)
+		})
+	}
+
+	c := NewClient(s, "testkv", OnLockReadPrevious)
+
+	err = doSomething(c, "composable key")
+	if err != nil {
+		t.Fatal(err)
+	}
+}
