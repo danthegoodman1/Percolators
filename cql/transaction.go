@@ -469,13 +469,13 @@ func (tx *Txn) rollBackTxn(ctx context.Context, key string, ts int64, lockRec []
 }
 
 func (tx *Txn) Get(ctx context.Context, key string) ([]byte, error) {
-	// Check the read cache
-	if val, exists := tx.readCache[key]; exists {
+	// Check the pending writes first to get a more updated value
+	if val, exists := tx.pendingWrites[key]; exists {
 		return val, nil
 	}
 
-	// Check the pending writes
-	if val, exists := tx.pendingWrites[key]; exists {
+	// Check the read cache
+	if val, exists := tx.readCache[key]; exists {
 		return val, nil
 	}
 
@@ -496,6 +496,9 @@ func (tx *Txn) Get(ctx context.Context, key string) ([]byte, error) {
 func (tx *Txn) Write(key string, value []byte) {
 	// Store in write cache
 	tx.pendingWrites[key] = value
+
+	// Delete from read cache if we have it (since we will read from write queue anyway)
+	delete(tx.readCache, key)
 }
 
 func (tx *Txn) Delete(key string) {
