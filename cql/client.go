@@ -50,14 +50,15 @@ func (c *Client) Transact(ctx context.Context, fn func(ctx context.Context, tx *
 		defer cancel()
 	}
 	tx := &Txn{
-		session:        c.session,
-		table:          c.table,
-		id:             uuid.New().String(),
-		pendingWrites:  make(map[string][]byte),
-		readCache:      make(map[string][]byte),
-		isolationLevel: Snapshot,
-		onLock:         c.onLock,
-		timeout:        timeout,
+		session:           c.session,
+		table:             c.table,
+		id:                uuid.New().String(),
+		pendingWrites:     make(map[string][]byte),
+		readCache:         make(map[string][]byte),
+		isolationLevel:    Snapshot,
+		onLock:            c.onLock,
+		timeout:           timeout,
+		serialConsistency: gocql.Serial,
 	}
 
 	// Get the read timestamp

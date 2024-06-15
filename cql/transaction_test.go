@@ -3,6 +3,7 @@ package cql
 import (
 	"context"
 	"fmt"
+	"github.com/gocql/gocql"
 	"math"
 	"testing"
 )
@@ -24,6 +25,27 @@ func TestSingleTransactionWrite(t *testing.T) {
 
 	err = func(t Transactable) error {
 		return t.Transact(context.Background(), func(ctx context.Context, tx *Txn) error {
+			tx.Write("examplew", []byte("this is a write only val"))
+			return nil
+		})
+	}(c)
+
+	if err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestSingleTransactionWriteLocalSerial(t *testing.T) {
+	s, err := setupTest()
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	c := NewClient(s, "testkv", OnLockReadPrevious)
+
+	err = func(t Transactable) error {
+		return t.Transact(context.Background(), func(ctx context.Context, tx *Txn) error {
+			tx.SetSerialConsistency(gocql.LocalSerial)
 			tx.Write("examplew", []byte("this is a write only val"))
 			return nil
 		})

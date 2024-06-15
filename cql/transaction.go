@@ -27,9 +27,10 @@ type (
 
 		timeout time.Time
 
-		tableMetadata  table.Metadata
-		isolationLevel IsolationLevel
-		onLock         LockBehavior
+		tableMetadata     table.Metadata
+		isolationLevel    IsolationLevel
+		serialConsistency gocql.SerialConsistency
+		onLock            LockBehavior
 	}
 
 	IsolationLevel string
@@ -55,6 +56,12 @@ func (tx *Txn) SetIsolationLevel(isolationLevel IsolationLevel) {
 		return
 	}
 	tx.isolationLevel = isolationLevel
+}
+
+// SetSerialConsistency sets the SERIAL CONSISTENCY of the batch operations.
+// Default gocql.Serial
+func (tx *Txn) SetSerialConsistency(consistency gocql.SerialConsistency) {
+	tx.serialConsistency = consistency
 }
 
 // commit is the top level commit called by the transaction initializer.
