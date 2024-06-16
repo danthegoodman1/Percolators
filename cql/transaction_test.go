@@ -15,7 +15,7 @@ func TestSetup(t *testing.T) {
 	}
 }
 
-func TestSingleTransactionWrite(t *testing.T) {
+func TestSingleTransactionWriteDefault(t *testing.T) {
 	s, err := setupTest()
 	if err != nil {
 		t.Fatal(err)
