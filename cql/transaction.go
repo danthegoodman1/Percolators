@@ -480,30 +480,38 @@ func (tx *Txn) rollBackTxn(ctx context.Context, key string, ts int64, lockRec []
 	return nil
 }
 
-func (tx *Txn) Get(ctx context.Context, key string) ([]byte, error) {
+func (tx *Txn) Get(ctx context.Context, key string) ReadFuture {
 	// Check the pending writes first to get a more updated value
 	if val, exists := tx.pendingWrites[key]; exists {
-		return val, nil
+		return ReadFuture{
+			immediateReturn: val,
+		}
 	}
 
 	// Check the read cache
 	if val, exists := tx.readCache[key]; exists {
-		return val, nil
+		return ReadFuture{
+			immediateReturn: val,
+		}
 	}
 
-	rec, err := tx.getRecord(ctx, key, *tx.readTime)
-	if err != nil {
-		return nil, fmt.Errorf("error in tx.get: %w", err)
+	readFuture := ReadFuture{
+		readChan: make(chan readError),
 	}
 
-	if rec == nil {
-		return nil, nil
-	}
+	go func(readChan chan readError) {
+		rec, err := tx.getRecord(ctx, key, *tx.readTime)
+		re := readError{
+			Record: rec,
+			Err:    err,
+		}
+		readChan <- re
+	}(readFuture.readChan)
 
-	return rec.Val, nil
+	return readFuture
 }
 
-// TODO: GetRange (maybe reads locks first, then reads read cache, then reads data records?)
+// TODO: GetRange (ranges have their own special caching)
 
 func (tx *Txn) Write(key string, value []byte) {
 	// Store in write cache

@@ -69,14 +69,14 @@ func TestSingleTransactionReadWriteSnapshot(t *testing.T) {
 			tx.Write("examplerw", []byte("this is a read write val"))
 
 			// Read cached val
-			val, err := tx.Get(ctx, "examplerw")
+			val, err := tx.Get(ctx, "examplerw").Get(context.Background())
 			if err != nil {
 				return fmt.Errorf("error in tx.Get: %w", err)
 			}
 			fmt.Println("got val", string(val))
 
 			// Read networked val
-			val, err = tx.Get(ctx, "examplew")
+			val, err = tx.Get(ctx, "examplew").Get(context.Background())
 			if err != nil {
 				return fmt.Errorf("error in tx.Get: %w", err)
 			}
@@ -106,14 +106,14 @@ func TestSingleTransactionReadWriteReadRepeatable(t *testing.T) {
 			tx.SetIsolationLevel(ReadRepeatable)
 
 			// Read cached val
-			val, err := tx.Get(ctx, "examplerwrr")
+			val, err := tx.Get(ctx, "examplerwrr").Get(context.Background())
 			if err != nil {
 				return fmt.Errorf("error in tx.Get: %w", err)
 			}
 			fmt.Println("got val", string(val))
 
 			// Read networked val
-			val, err = tx.Get(ctx, "examplew")
+			val, err = tx.Get(ctx, "examplew").Get(context.Background())
 			if err != nil {
 				return fmt.Errorf("error in tx.Get: %w", err)
 			}
@@ -181,7 +181,7 @@ func TestRollForward(t *testing.T) {
 	err = func(t Transactable) error {
 		return t.Transact(context.Background(), func(ctx context.Context, tx *Txn) error {
 			// Read networked val
-			val, err := tx.Get(ctx, key)
+			val, err := tx.Get(ctx, key).Get(context.Background())
 			if err != nil {
 				return fmt.Errorf("error in tx.Get: %w", err)
 			}
@@ -252,7 +252,7 @@ func TestRollBackPrimaryExpired(t *testing.T) {
 	err = func(t Transactable) error {
 		return t.Transact(context.Background(), func(ctx context.Context, tx *Txn) error {
 			// Read networked val
-			val, err := tx.Get(ctx, key)
+			val, err := tx.Get(ctx, key).Get(context.Background())
 			if err != nil {
 				return fmt.Errorf("error in tx.Get: %w", err)
 			}
@@ -306,7 +306,7 @@ func TestRollBackPrimaryExpiredIsPrimary(t *testing.T) {
 	err = func(t Transactable) error {
 		return t.Transact(context.Background(), func(ctx context.Context, tx *Txn) error {
 			// Read networked val
-			val, err := tx.Get(ctx, pkey)
+			val, err := tx.Get(ctx, pkey).Get(context.Background())
 			if err != nil {
 				return fmt.Errorf("error in tx.Get: %w", err)
 			}
@@ -361,7 +361,7 @@ func TestRollBackNoPrimary(t *testing.T) {
 	err = func(t Transactable) error {
 		return t.Transact(context.Background(), func(ctx context.Context, tx *Txn) error {
 			// Read networked val
-			val, err := tx.Get(ctx, key)
+			val, err := tx.Get(ctx, key).Get(context.Background())
 			if err != nil {
 				return fmt.Errorf("error in tx.Get: %w", err)
 			}
@@ -390,7 +390,7 @@ func TestRollBackAbort(t *testing.T) {
 	err = func(t Transactable) error {
 		return t.Transact(context.Background(), func(ctx context.Context, tx *Txn) error {
 			// Read networked val
-			val, err := tx.Get(ctx, key)
+			val, err := tx.Get(ctx, key).Get(context.Background())
 			if err != nil {
 				return fmt.Errorf("error in tx.Get: %w", err)
 			}
@@ -400,7 +400,7 @@ func TestRollBackAbort(t *testing.T) {
 
 			tx.Write(key, []byte("blah"))
 
-			val, err = tx.Get(ctx, key)
+			val, err = tx.Get(ctx, key).Get(context.Background())
 			if err != nil {
 				return fmt.Errorf("error in tx.Get: %w", err)
 			}
@@ -418,7 +418,7 @@ func TestRollBackAbort(t *testing.T) {
 	err = func(t Transactable) error {
 		return t.Transact(context.Background(), func(ctx context.Context, tx *Txn) error {
 			// Read networked val
-			_, err := tx.Get(ctx, key)
+			_, err := tx.Get(ctx, key).Get(context.Background())
 			if err != nil {
 				return fmt.Errorf("error in tx.Get: %w", err)
 			}
@@ -439,7 +439,7 @@ func TestRollBackAbort(t *testing.T) {
 	err = func(t Transactable) error {
 		return t.Transact(context.Background(), func(ctx context.Context, tx *Txn) error {
 			// Read networked val
-			val, err := tx.Get(ctx, key)
+			val, err := tx.Get(ctx, key).Get(context.Background())
 			if err != nil {
 				return fmt.Errorf("error in tx.Get: %w", err)
 			}
@@ -464,7 +464,7 @@ func TestComposableTransactions(t *testing.T) {
 	doAnotherThing := func(t Transactable, someReadKey string) error {
 		return t.Transact(context.Background(), func(ctx context.Context, tx *Txn) error {
 			// Read the key (cached)
-			val, err := tx.Get(ctx, someReadKey)
+			val, err := tx.Get(ctx, someReadKey).Get(context.Background())
 			if err != nil {
 				return fmt.Errorf("error in tx.Get: %w", err)
 			}

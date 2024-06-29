@@ -6,6 +6,10 @@ import (
 )
 
 func createKeyspace(s *gocql.Session) error {
+	if err := s.Query("DROP KEYSPACE if exists test").Exec(); err != nil {
+		return fmt.Errorf("error creating keyspace: %w", err)
+	}
+
 	if err := s.Query("CREATE KEYSPACE if not exists test WITH replication = {'class': 'NetworkTopologyStrategy', 'replication_factor' : 1}").Exec(); err != nil {
 		return fmt.Errorf("error creating keyspace: %w", err)
 	}
