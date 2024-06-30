@@ -2,6 +2,7 @@ package cql
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"github.com/gocql/gocql"
 	"github.com/google/uuid"
@@ -13,9 +14,12 @@ type (
 		session *gocql.Session
 		table   string
 		onLock  LockBehavior
+
+		existingTxn *Txn
 	}
 
 	// LockBehavior is the behavior when a live lock is discovered during a transaction.
+	// This is same to switch mid-transaction because the txn will either fail early, or fail at commit.
 	// Default OnLockAbort
 	LockBehavior string
 )
@@ -70,6 +74,11 @@ func (c *Client) Transact(ctx context.Context, fn func(ctx context.Context, tx *
 
 	err = fn(ctx, tx)
 	if err != nil {
+		var serializedErr TxnSerialized
+		if ok := errors.As(err, &serializedErr); ok {
+			// This transaction was serialized, so we don't want to commit it
+			return nil
+		}
 		return fmt.Errorf("error executing transaction: %w", err)
 	}
 

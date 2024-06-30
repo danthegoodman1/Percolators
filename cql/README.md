@@ -1,5 +1,21 @@
 # CQL Percolator
 
+<!-- TOC -->
+* [CQL Percolator](#cql-percolator)
+  * [Why CQL?](#why-cql)
+  * [Who is the timestamp oracle?](#who-is-the-timestamp-oracle)
+  * [Composable transactions](#composable-transactions)
+  * [Serializable Transactions/Distributed Transaction Processing (advanced)](#serializable-transactionsdistributed-transaction-processing-advanced)
+  * [Transactional caching](#transactional-caching)
+  * [Snapshot isolation](#snapshot-isolation)
+  * [Read Repeatable isolation](#read-repeatable-isolation)
+  * [Transaction records](#transaction-records)
+  * [Rollbacks](#rollbacks)
+  * [Async commit](#async-commit)
+  * [Timeouts](#timeouts)
+  * [Pro tips](#pro-tips)
+<!-- TOC -->
+
 ## Why CQL?
 
 CQL does not natively have proper transactions (if you say LWTs I swear to god), but it has atomic batches, which are required to implement Percolator.
@@ -35,6 +51,60 @@ Could we drop transaction composition and support read-only and read-write trans
 Could we have some function-level call that says “hey you can disable read-aborting for this part of the transaction”? Yes, but then you’d have to think a lot more about what kinds of transactions are being used, whether you’re introducing bugs, how the database can be used, etc. That’s a lot of thinking about the database, and not the thing you are trying to make. Bleh.
 
 The transaction would abort regardless, and reads are so much cheaper than writes, so it doesn’t really matter if you end up doing a few extra reads before writing. Plus, you never really have to think about it, and that simplicity is worth a lot.
+
+## Serializable Transactions/Distributed Transaction Processing (advanced)
+
+Transactions can be serialized and passed to other services across the network. This allows for distributed transaction processing across clients.
+
+You can serialize (and abort committing) any running transaction. The REQUIRED steps are:
+
+1. Serialize the transaction, not performing any more operations on the transaction
+2. Send the serialized transaction to another service
+3. Return `TxnSerialized{}` to the transaction handler function (this prevents the client from committing)
+
+```go
+// Your transaction handler function 
+t.Transact(context.Background(), func(ctx context.Context, tx *Txn) error {
+    tx.Write("examplew", []byte("this is a write only val"))
+    // Serialize the state, you MUST cease future operations within this
+    // transaction if you use the serialized transaction elsewhere
+    txnBytes, err := tx.Serialize()
+    if err != nil {
+        return fmt.Errorf("error in tx.Serialize: %w", err)
+    }
+	
+    // ... send to another service
+    
+    return TxnSerialized{} // Tell the client that it should NOT commit this transaction
+})
+```
+
+They can be used later like:
+```go
+txn, err := FromSerialized(s, serialized)
+if err != nil {
+    t.Fatal(err)
+}
+
+err = yourFunction(txn, ...)
+if err != nil {
+    t.Fatal(err)
+}
+// The transaction has been committed
+```
+
+See an example in `transaction_test.go`.
+
+**It is critical to perform this properly, otherwise your transactions will never commit.**
+
+Note that transactions are not hard-disabled once serialized, as _technically_ you can never deserialize the transaction and continue using the local version, but in fairness there's no real case where this should be needed either.
+
+Deserialized transactions will inherit a deadline in this order:
+
+1. The provided context if it has a deadline
+2. The deserialized deadline from the original transaction (will have been 5 seconds in the future)
+
+Transactions can be continuously serialized and deserialized to pass a single transaction among many services, provided that they do not reach their deadline before doing so.
 
 ## Transactional caching
 

@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"github.com/gocql/gocql"
 	"math"
+	"strings"
 	"testing"
 )
 
@@ -488,6 +489,78 @@ func TestComposableTransactions(t *testing.T) {
 	c := NewClient(s, "testkv", OnLockReadPrevious)
 
 	err = doSomething(c, "composable key")
+	if err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestSerializableTransactions(t *testing.T) {
+	s, err := setupTest()
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	var serialized []byte
+
+	performWrite := func(t Transactable, someWriteKey string) error {
+		return t.Transact(context.Background(), func(ctx context.Context, tx *Txn) error {
+			// Write the key
+			tx.Write(someWriteKey, []byte("i'm a val"))
+
+			serialized, err = tx.Serialize()
+			if err != nil {
+				return fmt.Errorf("error in tx.Serialize: %w", err)
+			}
+
+			return TxnSerialized{}
+		})
+	}
+
+	verifyWrite := func(t Transactable, someReadKey string) error {
+		return t.Transact(context.Background(), func(ctx context.Context, tx *Txn) error {
+			// Read the key (cached)
+			val, err := tx.Get(ctx, someReadKey)
+			if err != nil {
+				return fmt.Errorf("error in tx.Get: %w", err)
+			}
+			if string(val) != "i'm a val" {
+				return fmt.Errorf("got unexpected value: %s", string(val))
+			}
+
+			return nil
+		})
+	}
+
+	c := NewClient(s, "testkv", OnLockReadPrevious)
+
+	err = performWrite(c, "composable key")
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// Verify that it's not written yet
+	c = NewClient(s, "testkv", OnLockReadPrevious)
+
+	err = verifyWrite(c, "composable key")
+	if err != nil && !strings.Contains(err.Error(), "got unexpected value") {
+		t.Fatal(err)
+	}
+
+	// Do the second function from the deserialized transaction
+	dsTxn, err := FromSerialized(s, serialized)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	err = verifyWrite(dsTxn, "composable key")
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// Verify write in another txn
+	c = NewClient(s, "testkv", OnLockReadPrevious)
+
+	err = verifyWrite(c, "composable key")
 	if err != nil {
 		t.Fatal(err)
 	}
