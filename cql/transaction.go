@@ -5,7 +5,6 @@ import (
 	"errors"
 	"fmt"
 	"github.com/gocql/gocql"
-	"github.com/scylladb/gocqlx/v2/table"
 	"golang.org/x/sync/errgroup"
 	"time"
 )
@@ -27,7 +26,6 @@ type (
 
 		timeout time.Time
 
-		tableMetadata     table.Metadata
 		isolationLevel    IsolationLevel
 		serialConsistency gocql.SerialConsistency
 		onLock            LockBehavior
