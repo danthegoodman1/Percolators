@@ -5,7 +5,7 @@
   * [Why CQL?](#why-cql)
   * [Who is the timestamp oracle?](#who-is-the-timestamp-oracle)
   * [Composable transactions](#composable-transactions)
-  * [Serializable Transactions/Distributed Transaction Processing (advanced)](#serializable-transactionsdistributed-transaction-processing-advanced)
+  * [(De)serializable Transactions/Distributed Transaction Processing (advanced)](#deserializable-transactionsdistributed-transaction-processing-advanced)
   * [Transactional caching](#transactional-caching)
   * [Snapshot isolation](#snapshot-isolation)
   * [Read Repeatable isolation](#read-repeatable-isolation)
@@ -52,7 +52,7 @@ Could we have some function-level call that says “hey you can disable read-abo
 
 The transaction would abort regardless, and reads are so much cheaper than writes, so it doesn’t really matter if you end up doing a few extra reads before writing. Plus, you never really have to think about it, and that simplicity is worth a lot.
 
-## Serializable Transactions/Distributed Transaction Processing (advanced)
+## (De)serializable Transactions/Distributed Transaction Processing (advanced)
 
 Transactions can be serialized and passed to other services across the network. This allows for distributed transaction processing across clients.
 
