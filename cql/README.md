@@ -36,6 +36,53 @@ Could we have some function-level call that says “hey you can disable read-abo
 
 The transaction would abort regardless, and reads are so much cheaper than writes, so it doesn’t really matter if you end up doing a few extra reads before writing. Plus, you never really have to think about it, and that simplicity is worth a lot.
 
+## Serializable Transactions (advanced)
+
+Transactions can be serialized and passed to other microservices across the network.
+
+You can serialize (and abort committing) any running transaction with the following:
+
+1. Serialize the transaction, not performing any more operations on the transaction
+2. Sending the serialized transaction to another service
+3. Returning `TxnSerialized{}` to the transaction handler function (this prevents the client from committing)
+
+```go
+// Your transaction handler function 
+t.Transact(context.Background(), func(ctx context.Context, tx *Txn) error {
+    tx.Write("examplew", []byte("this is a write only val"))
+	txnBytes, err := tx.Serialize() // Serialize the state, you MUST cease future operations within this transaction if you use the serialized transaction elsewhere
+	if err != nil {
+	    return fmt.Errorf("error in tx.Serialize: %w", err)
+	}
+    
+    return TxnSerialized{} // Tell the client that it should NOT commit this transaction
+})
+```
+
+They can be used later like:
+```go
+dsTxn, err := FromSerialized(s, serialized)
+if err != nil {
+    t.Fatal(err)
+}
+
+err = yourFunction(dsTxn, ...)
+if err != nil {
+    t.Fatal(err)
+}
+```
+
+See an example in `transaction_test.go`.
+
+Deserialized transactions will deadline in this order:
+
+1. The provided context if it has a deadline
+2. The deserialized deadline from the original transaction
+
+Transactions can be continuously serialized and deserialized to pass a single transaction among many micro transactions.
+
+**It is critical to perform this properly, otherwise your transactions will never commit.**
+
 ## Transactional caching
 
 Similar to the awesome composable transactions, the transaction client has another trick up its sleeve: transactional caching.

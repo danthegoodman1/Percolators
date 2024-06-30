@@ -2,6 +2,7 @@ package cql
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"github.com/gocql/gocql"
@@ -18,7 +19,7 @@ type (
 		readTime  *time.Time
 		writeTime *time.Time
 
-		readCache map[string][]byte
+		readCache map[string][]byte `json:"-"`
 
 		// empty array means delete
 		pendingWrites  map[string][]byte
@@ -521,9 +522,40 @@ func (tx *Txn) getTime(ctx context.Context) (*time.Time, error) {
 	return &t, nil
 }
 
+func (t *Txn) toSerializable() serializableTxn {
+	return serializableTxn{
+		Table:             t.table,
+		Id:                t.id,
+		ReadTime:          t.readTime,
+		WriteTime:         t.writeTime,
+		PendingWrites:     t.pendingWrites,
+		PrimaryLockKey:    t.primaryLockKey,
+		Timeout:           t.timeout,
+		IsolationLevel:    t.isolationLevel,
+		SerialConsistency: t.serialConsistency,
+		OnLock:            t.onLock,
+	}
+}
+
+func (t *Txn) Serialize() ([]byte, error) {
+	jsonBytes, err := json.Marshal(t.toSerializable())
+	if err != nil {
+		return nil, fmt.Errorf("error in json.Marshal: %w", err)
+	}
+
+	return jsonBytes, nil
+}
+
+type TxnSerialized struct {
+}
+
+func (t TxnSerialized) Error() string {
+	return "transaction serialized"
+}
+
 type TxnAborted struct {
 }
 
-func (t *TxnAborted) Error() string {
+func (t TxnAborted) Error() string {
 	return "transaction aborted"
 }
