@@ -18,7 +18,7 @@
 
 ## Why CQL?
 
-CQL does not natively have proper transactions (if you say LWTs I swear to god), but it has atomic batches, which are required to implement Percolator.
+CQL does not natively have proper transactions, but it has atomic batches, which are required to implement Percolator.
 
 Cassandra and Scylla (Scylla more so) allow absurd levels of scale, and in particular, write performance.
 
@@ -32,7 +32,7 @@ So technically this breaks the isolation guarantees, but I’m just going to swe
 
 ## Composable transactions
 
-Managing transactions is a pain, and wouldn’t it be nice if you could just write functions?
+Managing transactions is a pain, and wouldn't it be nice if you could just write functions?
 
 Composable transactions will automatically start a transaction if one doesn’t exist, or will use an existing one. They will also automatically roll back if an error is thrown (all the way up the chain), or automatically commit.
 
@@ -157,6 +157,8 @@ Because the SQL lacks traditional atomic batch operations, we need to break up w
 For prewrite, we can dual-insert both the data, and the lock like a normal atomic batch.
 
 For write, we need to both delete the lock, and insert the write record in the same atomic transaction (assuming that we still have the lock). To use a transaction for this purpose would be comical.
+
+Reads for the lock and write intent are done with SERIAL (use paxos) to ensure they see any pending (but failed due to failures, not conditional failures) transactions. Because reads always check for a pending write intent, it's safe to use QUORUM reads for the data, as any partially committed transaction will be carried forward at read time.
 
 ## Rollbacks
 
