@@ -22,7 +22,7 @@ type (
 		Timeout time.Time
 
 		IsolationLevel    IsolationLevel
-		SerialConsistency gocql.SerialConsistency
+		SerialConsistency gocql.Consistency
 		OnLock            LockBehavior
 	}
 
