@@ -161,7 +161,7 @@ func (tx *Txn) preWrite(ctx context.Context, key string, val []byte) error {
 	if tx.isolationLevel == Snapshot || tx.isolationLevel == "" {
 		// Snapshot isolation, verify that there are no write records after our TS
 		// Get the highest write record
-		err = tx.session.Query(fmt.Sprintf("select col, ts, val from \"%s\" where key = ? and ts > ? and col = 'w' order by ts asc limit 1", tx.table), key, tx.readTime.UnixNano()).SerialConsistency(gocql.Serial).Scan()
+		err = tx.session.Query(fmt.Sprintf("select col, ts, val from \"%s\" where key = ? and ts > ? and col = 'w' order by ts asc limit 1", tx.table), key, tx.readTime.UnixNano()).SerialConsistency(tx.serialConsistency).Scan()
 		if errors.Is(err, gocql.ErrNotFound) {
 			// There is nothing higher
 			return nil
@@ -276,7 +276,7 @@ func (tx *Txn) getRecord(ctx context.Context, key string, ts time.Time) (*record
 		Key: key,
 	}
 	foundLock := true
-	err := tx.session.Query(fmt.Sprintf("select col, ts, val from \"%s\" where key = ? and ts = 0 and col = 'l'", tx.table), key).SerialConsistency(gocql.Serial).Scan(&lockRec.Col, &lockRec.Ts, &lockRec.Val)
+	err := tx.session.Query(fmt.Sprintf("select col, ts, val from \"%s\" where key = ? and ts = 0 and col = 'l'", tx.table), key).SerialConsistency(tx.serialConsistency).Scan(&lockRec.Col, &lockRec.Ts, &lockRec.Val)
 	if errors.Is(err, gocql.ErrNotFound) {
 		foundLock = false
 	} else if err != nil {
@@ -307,7 +307,7 @@ func (tx *Txn) getRecord(ctx context.Context, key string, ts time.Time) (*record
 			primaryLockRec := record{
 				Key: key,
 			}
-			err = tx.session.Query(fmt.Sprintf("select col, ts, val from \"%s\" where key = ? and ts = 0 and col = 'l'", tx.table), lock.PrimaryLockKey).SerialConsistency(gocql.Serial).Scan(&primaryLockRec.Col, &primaryLockRec.Ts, &primaryLockRec.Val)
+			err = tx.session.Query(fmt.Sprintf("select col, ts, val from \"%s\" where key = ? and ts = 0 and col = 'l'", tx.table), lock.PrimaryLockKey).SerialConsistency(tx.serialConsistency).Scan(&primaryLockRec.Col, &primaryLockRec.Ts, &primaryLockRec.Val)
 			if errors.Is(err, gocql.ErrNotFound) {
 				// Do nothing
 			} else if err != nil {
@@ -335,7 +335,7 @@ func (tx *Txn) getRecord(ctx context.Context, key string, ts time.Time) (*record
 		if primaryLock == nil {
 			// We must check for the write record
 			foundCommitWrite := false
-			iter := tx.session.Query(fmt.Sprintf("select col, ts, val from \"%s\" where key = ? and ts > ? and col = 'w' order by ts asc", tx.table), lock.PrimaryLockKey, lock.StartTs).SerialConsistency(gocql.Serial).Iter()
+			iter := tx.session.Query(fmt.Sprintf("select col, ts, val from \"%s\" where key = ? and ts > ? and col = 'w' order by ts asc", tx.table), lock.PrimaryLockKey, lock.StartTs).SerialConsistency(tx.serialConsistency).Iter()
 			scanner := iter.Scanner()
 
 			for scanner.Next() {
