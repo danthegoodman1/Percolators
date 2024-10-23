@@ -10,7 +10,7 @@ func createKeyspace(s *gocql.Session) error {
 		return fmt.Errorf("error dropping keyspace: %w", err)
 	}
 
-	if err := s.Query("CREATE KEYSPACE if not exists test WITH replication = {'class': 'NetworkTopologyStrategy', 'replication_factor' : 1}").Exec(); err != nil {
+	if err := s.Query("CREATE KEYSPACE if not exists test WITH replication = {'class': 'NetworkTopologyStrategy', 'replication_factor' : 1} AND tablets = { 'enabled': false }").Exec(); err != nil {
 		return fmt.Errorf("error creating keyspace: %w", err)
 	}
 
@@ -18,7 +18,7 @@ func createKeyspace(s *gocql.Session) error {
 }
 
 func createTable(s *gocql.Session) error {
-	if err := s.Query("create table if not exists testkv (key text, col text, ts bigint, val blob, primary key (key, col, ts)) with clustering order by (col desc, ts desc)").Exec(); err != nil {
+	if err := s.Query("create table if not exists testkv (key text, col text, ts bigint, val blob, primary key (key, col, ts)) with clustering order by (col desc, ts desc) ").Exec(); err != nil {
 		return fmt.Errorf("error creating table: %w", err)
 	}
 
