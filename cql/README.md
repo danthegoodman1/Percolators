@@ -122,11 +122,11 @@ Note: `GetRange` does not use read caching, this will fetch from the DB every ti
 
 ## Snapshot isolation
 
-Simply put, snapshot isolation is just like serializable: It protects against writes against the same key from concurrent transactions, and ensures you see a stable point in time of the database during the entire transaction.
+Simply put, snapshot isolation is similar to serializable isolation in that it protects against writes against the same key from concurrent transactions, and ensures you see a stable point in time of the database during the entire transaction.
 
-The major difference is that reads never stall (e.g. a row is locked), and writes never fail (e.g. serializable conflict). Transaction abort due to conflicts happens at commit time.
+However, it does not check against changes in read-only rows (if a row that was read and not written changes during the transaction, that does not cause a rollback).
 
-TLDR same thing, only aborts at commit time.
+The major performance difference is that reads never stall (e.g. a row is locked), and writes never fail (e.g. serializable conflict). Transaction abort due to conflicts happens at commit time.
 
 I won’t explain any more features of Percolator (like rolling forward transactions), if you’re interested on how it works and its guarantees, go read the paper (it’s a great read).
 
