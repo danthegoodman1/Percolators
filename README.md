@@ -1,6 +1,6 @@
 # Percolators
 
-A collection of Percolator clients on top of eisting databases! See each folder for more!
+A collection of Percolator clients on top of existing databases! See each folder for more!
 
 Percolators makes various databases have key-value including transactions with snapshot isolation (like serializable), or a read committed/snapshot hybrid (see each client).
 
