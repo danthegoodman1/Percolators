@@ -126,7 +126,7 @@ Simply put, snapshot isolation is similar to serializable isolation in that it p
 
 However, it does not check against changes in read-only rows (if a row that was read and not written changes during the transaction, that does not cause a rollback).
 
-The major performance difference is that reads never stall (e.g. a row is locked), and writes never fail (e.g. serializable conflict). Transaction abort due to conflicts happens at commit time.
+The major performance difference is that reads never stall (e.g. a row is locked), and only the primary row in a transaction needs to successfully commit, meaning that the rest of the transaction can be applied async, or finished by another transaction if this one fails to finish committing.
 
 I won’t explain any more features of Percolator (like rolling forward transactions), if you’re interested on how it works and its guarantees, go read the paper (it’s a great read).
 
