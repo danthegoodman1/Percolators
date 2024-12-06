@@ -5,9 +5,10 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"time"
+
 	"github.com/gocql/gocql"
 	"golang.org/x/sync/errgroup"
-	"time"
 )
 
 type (
@@ -38,7 +39,7 @@ type (
 var (
 	// ReadRepeatable means that if there is a commit to a record between read and write, the txn does not abort
 	ReadRepeatable IsolationLevel = "rr"
-	// Snapshot isolation is effectively the same as Serializable
+	// Snapshot isolation will check for write-write conflicts
 	Snapshot IsolationLevel = "ss"
 )
 
