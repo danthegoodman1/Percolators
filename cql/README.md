@@ -181,3 +181,7 @@ By default, transactions have a 5-second timeout (the child context will be give
 3. Don’t use long or massive transactions. The longer they are, the more likely there will be a conflict at commit time (and the consequence of retrying it is higher). Writing a lot of data will also take longer.
 4. Retry transactions, and let their backoff window be longer than the transaction timeout (in case you discover a freshly abandoned transaction). Generally leaving the transaction timeout at 5s is a smart idea. You can easily rip the old deadline off a context while preserving its value by using `context.WithoutCancel()`, and letting the transaction client automatically add the 5-second deadline back in
 5. Keep in mind that currently ScyllaDB uses the [tablets](The following ScyllaDB features are not supported if a keyspace has tablets enabled) architecture as default now, which does not currently support LWTs. The namespace will have to be explicitly disabled.
+
+## Improvements
+
+When integrating with a timestamp oracle, having the client be able to batch transactions to some interval (e.g. 5ms) so in a single request it can fetch multiple timestamps at once.
