@@ -150,6 +150,7 @@ func (tx *Txn) preWrite(ctx context.Context, key string, val []byte) error {
 	})
 
 	// Non-map version was always having applied: false
+	// Actually bc scylla includes all columns: https://github.com/apache/cassandra-gocql-driver/issues/1746#issuecomment-2609512132
 	applied, _, err := tx.session.MapExecuteBatchCAS(b, make(map[string]interface{}))
 	if err != nil {
 		return fmt.Errorf("error in MapExecuteBatchCAS: %w", err)
